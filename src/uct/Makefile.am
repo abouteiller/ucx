@@ -146,6 +146,18 @@ libuct_la_SOURCES += \
     cuda/cuda_ep.c
 endif
 
+if HAVE_TCP
+noinst_HEADERS += \
+	tcp/tcp_pd.h \
+	tcp/tcp_iface.h \
+	tcp/tcp_ep.h
+
+libuct_la_SOURCES += \
+	tcp/tcp_pd.c \
+	tcp/tcp_iface.c \
+	tcp/tcp_ep.c
+endif
+
 # FIXME these should be done conditionally
 noinst_HEADERS += \
     sm/mm/mm_iface.h \
