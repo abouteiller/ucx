@@ -1,5 +1,7 @@
 #
 # Copyright (C) UT-Battelle, LLC. 2014-2015. ALL RIGHTS RESERVED.
+# Copyright (C) The University of Tennessee and The University 
+#               of Tennessee Research Foundation. 2015. ALL RIGHTS RESERVED.
 # See file LICENSE for terms.
 #
 tcp_happy="no"

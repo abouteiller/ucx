@@ -1,6 +1,8 @@
 /**
 * Copyright (C) UT-Battelle, LLC. 2015. ALL RIGHTS RESERVED.
 * Copyright (C) Mellanox Technologies Ltd. 2001-2015.  ALL RIGHTS RESERVED.
+* Copyright (C) The University of Tennessee and The University                                                                        
+*               of Tennessee Research Foundation. 2015. ALL RIGHTS RESERVED.
 * See file LICENSE for terms.
 */
 
