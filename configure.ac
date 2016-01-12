@@ -69,7 +69,9 @@ AC_PROG_LIBTOOL
 AC_HEADER_STDC
 LT_LIB_M
 
+m4_include([config/m4/pkg.m4])
 PKG_PROG_PKG_CONFIG
+
 
 #
 # Save config flags for version dump tool
@@ -166,6 +168,32 @@ AC_ARG_ENABLE([debug-data],
 #
 AC_SUBST([VALGRIND_LIBPATH], [${valgrind_libpath}])
 
+# Configure jemalloc
+#
+
+AC_ARG_ENABLE([jemalloc],
+        AS_HELP_STRING([--enable-jemalloc],
+                       [Compile with jemalloc, libjemalloc will be installed in the same place as UCX. default: YES]),
+        [if test "x$enableval" = xyes; then
+	    jemalloc_enabled=yes
+         else
+	    jemalloc_enabled=no
+	 fi],
+	 [if test -e "$srcdir/external/jemalloc/configure"; then
+	     jemalloc_enabled=yes
+	  else
+	     jemalloc_enabled=no
+	  fi])
+
+AS_IF([test "x$jemalloc_enabled" == xyes],
+          [AS_MESSAGE([compiling jemalloc])
+	      AC_SUBST([BUILD_JEMALLOC], [yes])
+	      AC_CONFIG_SUBDIRS([external/jemalloc])
+	      AM_CONDITIONAL([BUILD_JEMALLOC],[test "x$BUILD_JEMALLOC" = "xyes"])
+	      ],
+          [AC_SUBST([BUILD_JEMALLOC], [no])
+	  AM_CONDITIONAL([BUILD_JEMALLOC],[false])])
+
 #
 #Doxygen options
 #
@@ -195,11 +223,16 @@ AC_CONFIG_FILES([
                  src/uct/Makefile
                  src/uct/api/version.h
                  src/ucp/Makefile
-                 src/tools/hook/Makefile
+                 src/ucp/api/ucp_version.h
+                 src/ucp/core/ucp_version.c
+                 src/ucm/Makefile
                  src/tools/info/Makefile
                  src/tools/perf/Makefile
                  test/examples/Makefile
                  test/gtest/Makefile
+                 test/mpi/Makefile
+                 external/Makefile
                  ])
+AC_CONFIG_FILES([test/mpi/run_mpi.sh], [chmod a+x test/mpi/run_mpi.sh])
 
 AC_OUTPUT

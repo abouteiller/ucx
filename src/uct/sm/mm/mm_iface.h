@@ -7,12 +7,16 @@
 #ifndef UCT_MM_IFACE_H
 #define UCT_MM_IFACE_H
 
-#include <uct/tl/tl_base.h>
-#include <ucs/debug/memtrack.h>
-#include <ucs/sys/sys.h>
-#include <sys/shm.h>
 #include "mm_def.h"
 #include "mm_pd.h"
+
+#include <uct/base/uct_iface.h>
+#include <ucs/arch/cpu.h>
+#include <ucs/debug/memtrack.h>
+#include <ucs/datastruct/arbiter.h>
+#include <ucs/sys/sys.h>
+#include <sys/shm.h>
+
 
 #define UCT_MM_TL_NAME "mm"
 #define UCT_MM_FIFO_CTL_SIZE_ALIGNED  ucs_align_up(sizeof(uct_mm_fifo_ctl_t),UCS_SYS_CACHE_LINE_SIZE)
@@ -58,11 +62,13 @@ struct uct_mm_iface {
     uct_mm_recv_desc_t      *last_recv_desc;
 
     size_t                  rx_headroom;
+    ucs_arbiter_t           arbiter;
+    const char              *path;            /* path to the backing file (for 'posix') */
 
     struct {
         unsigned fifo_size;
         unsigned fifo_elem_size;
-        unsigned seg_size;       /* size of the receive descriptor (for payload)*/
+        unsigned seg_size;                    /* size of the receive descriptor (for payload)*/
     } config;
 };
 

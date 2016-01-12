@@ -53,3 +53,10 @@ ucx.spec
 ucx.pc
 doc/doxygen-doc
 doc/uml/uct.pdf
+test-driver
+src/ucp/api/ucp_version.h
+src/ucp/core/ucp_version.c
+test/mpi/run_mpi.sh
+*.tap
+valgrind.xml
+tags

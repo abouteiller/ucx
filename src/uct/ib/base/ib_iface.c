@@ -6,7 +6,8 @@
 
 #include "ib_iface.h"
 
-#include <uct/tl/context.h>
+#include <uct/base/uct_pd.h>
+#include <ucs/arch/cpu.h>
 #include <ucs/type/component.h>
 #include <ucs/type/class.h>
 #include <ucs/debug/log.h>
@@ -55,7 +56,7 @@ ucs_config_field_t uct_ib_iface_config_table[] = {
    "Number of send WQEs for which completion is requested.",
    ucs_offsetof(uct_ib_iface_config_t, tx.cq_moderation), UCS_CONFIG_TYPE_UINT},
 
-  UCT_IFACE_MPOOL_CONFIG_FIELDS("TX_", -1, 1024, "send",
+  UCT_IFACE_MPOOL_CONFIG_FIELDS("TX_", 65536, 1024, "send",
                                 ucs_offsetof(uct_ib_iface_config_t, tx.mp),
       "\nAttention: Setting this param with value != -1 is a dangerous thing\n"
       "in RC/DC and could cause deadlock or performance degradation."),
@@ -74,7 +75,7 @@ ucs_config_field_t uct_ib_iface_config_table[] = {
    "size than requested with the same hardware resources, it will be used instead.",
    ucs_offsetof(uct_ib_iface_config_t, rx.inl), UCS_CONFIG_TYPE_MEMUNITS},
 
-  UCT_IFACE_MPOOL_CONFIG_FIELDS("RX_", -1, 0, "receive",
+  UCT_IFACE_MPOOL_CONFIG_FIELDS("RX_", 65536, 0, "receive",
                                 ucs_offsetof(uct_ib_iface_config_t, rx.mp), ""),
 
   {"GID_INDEX", "0",
@@ -171,7 +172,7 @@ void uct_ib_iface_release_am_desc(uct_iface_t *tl_iface, void *desc)
     void *ib_desc;
 
     ib_desc = desc - iface->config.rx_headroom_offset;
-    ucs_mpool_put(ib_desc);
+    ucs_mpool_put_inline(ib_desc);
 }
 
 ucs_status_t uct_ib_iface_get_address(uct_iface_h tl_iface, struct sockaddr *addr)

@@ -7,12 +7,11 @@
 #include "ucs/debug/memtrack.h"
 #include "ucs/type/class.h"
 
-#include "uct/tl/context.h"
+#include "uct/base/uct_pd.h"
 #include "ugni_iface.h"
 #include "ugni_pd.h"
 
 /* Forward declarations */
-static ucs_status_t uct_ugni_pd_open(const char *pd_name, uct_pd_h *pd_p);
 
 UCS_CONFIG_DEFINE_ARRAY(ugni_alloc_methods, sizeof(uct_alloc_method_t),
                         UCS_CONFIG_TYPE_ENUM(uct_alloc_method_names));
@@ -56,7 +55,7 @@ static ucs_status_t uct_ugni_pd_query(uct_pd_h pd, uct_pd_attr_t *pd_attr)
 static ucs_status_t uct_ugni_mem_reg(uct_pd_h pd, void *address, size_t length,
                                      uct_mem_h *memh_p)
 {
-    ucs_status_t rc;
+    ucs_status_t status;
     gni_return_t ugni_rc;
     uct_ugni_pd_t *ugni_pd = ucs_derived_of(pd, uct_ugni_pd_t);
     gni_mem_handle_t * mem_hndl = NULL;
@@ -70,7 +69,7 @@ static ucs_status_t uct_ugni_mem_reg(uct_pd_h pd, void *address, size_t length,
     mem_hndl = ucs_malloc(sizeof(gni_mem_handle_t), "gni_mem_handle_t");
     if (NULL == mem_hndl) {
         ucs_error("Failed to allocate memory for gni_mem_handle_t");
-        rc = UCS_ERR_NO_MEMORY;
+        status = UCS_ERR_NO_MEMORY;
         goto mem_err;
     }
 
@@ -81,7 +80,7 @@ static ucs_status_t uct_ugni_mem_reg(uct_pd_h pd, void *address, size_t length,
     if (GNI_RC_SUCCESS != ugni_rc) {
         ucs_error("GNI_MemRegister failed (addr %p, size %zu), Error status: %s %d",
                  address, length, gni_err_str[ugni_rc], ugni_rc);
-        rc = UCS_ERR_IO_ERROR;
+        status = UCS_ERR_IO_ERROR;
         goto mem_err;
     }
 
@@ -94,7 +93,7 @@ static ucs_status_t uct_ugni_mem_reg(uct_pd_h pd, void *address, size_t length,
 mem_err:
     free(mem_hndl);
     pthread_mutex_unlock(&uct_ugni_global_lock);
-    return rc;
+    return status;
 }
 
 static ucs_status_t uct_ugni_mem_dereg(uct_pd_h pd, uct_mem_h memh)
@@ -102,7 +101,7 @@ static ucs_status_t uct_ugni_mem_dereg(uct_pd_h pd, uct_mem_h memh)
     uct_ugni_pd_t *ugni_pd = ucs_derived_of(pd, uct_ugni_pd_t);
     gni_mem_handle_t *mem_hndl = (gni_mem_handle_t *) memh;
     gni_return_t ugni_rc;
-    ucs_status_t rc = UCS_OK;
+    ucs_status_t status = UCS_OK;
 
     pthread_mutex_lock(&uct_ugni_global_lock);
 
@@ -110,12 +109,12 @@ static ucs_status_t uct_ugni_mem_dereg(uct_pd_h pd, uct_mem_h memh)
     if (GNI_RC_SUCCESS != ugni_rc) {
         ucs_error("GNI_MemDeregister failed, Error status: %s %d",
                  gni_err_str[ugni_rc], ugni_rc);
-        rc = UCS_ERR_IO_ERROR;
+        status = UCS_ERR_IO_ERROR;
     }
     ucs_free(mem_hndl);
 
     pthread_mutex_unlock(&uct_ugni_global_lock);
-    return rc;
+    return status;
 }
 
 static ucs_status_t uct_ugni_rkey_pack(uct_pd_h pd, uct_mem_h memh,
@@ -262,10 +261,11 @@ static void uct_ugni_pd_close(uct_pd_h pd)
     pthread_mutex_unlock(&uct_ugni_global_lock);
 }
 
-static ucs_status_t uct_ugni_pd_open(const char *pd_name, uct_pd_h *pd_p)
+static ucs_status_t uct_ugni_pd_open(const char *pd_name, const uct_pd_config_t *pd_config,
+                                     uct_pd_h *pd_p)
 {
     int domain_id;
-    ucs_status_t rc = UCS_OK;
+    ucs_status_t status = UCS_OK;
 
     pthread_mutex_lock(&uct_ugni_global_lock);
     static uct_pd_ops_t pd_ops = {
@@ -287,16 +287,16 @@ static ucs_status_t uct_ugni_pd_open(const char *pd_name, uct_pd_h *pd_p)
     *pd_p = &pd.super;
 
     if (!pd.ref_count) {
-        rc = init_device_list(&job_info);
-        if (UCS_OK != rc) {
-            ucs_error("Failed to init device list, Error status: %d", rc);
+        status = init_device_list(&job_info);
+        if (UCS_OK != status) {
+            ucs_error("Failed to init device list, Error status: %d", status);
             goto error;
         }
-        rc = uct_ugni_init_nic(0, &domain_id,
-                               &pd.cdm_handle, &pd.nic_handle,
-                               &pd.address);
-        if (UCS_OK != rc) {
-            ucs_error("Failed to UGNI NIC, Error status: %d", rc);
+        status = uct_ugni_init_nic(0, &domain_id,
+                                   &pd.cdm_handle, &pd.nic_handle,
+                                   &pd.address);
+        if (UCS_OK != status) {
+            ucs_error("Failed to UGNI NIC, Error status: %d", status);
             goto error;
         }
     }
@@ -305,7 +305,7 @@ static ucs_status_t uct_ugni_pd_open(const char *pd_name, uct_pd_h *pd_p)
 
 error:
     pthread_mutex_unlock(&uct_ugni_global_lock);
-    return rc;
+    return status;
 }
 
 uct_ugni_device_t * uct_ugni_device_by_name(const char *dev_name)
@@ -337,6 +337,8 @@ UCT_PD_COMPONENT_DEFINE(uct_ugni_pd_component,
                         uct_ugni_query_pd_resources,
                         uct_ugni_pd_open,
                         NULL,
-                        (3 * sizeof(uint64_t)),
                         uct_ugni_rkey_unpack,
-                        uct_ugni_rkey_release)
+                        uct_ugni_rkey_release,
+                        "UGNI_",
+                        uct_pd_config_table,
+                        uct_pd_config_t);

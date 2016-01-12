@@ -10,7 +10,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <ucs/debug/log.h>
-
+#include <ucs/async/async.h>
 
 #define PRINT_CAP(_name, _cap_flags, _max) \
     if ((_cap_flags) & (UCT_IFACE_FLAG_##_name)) { \
@@ -63,7 +63,7 @@ static void print_iface_info(uct_worker_h worker, uct_pd_h pd,
 
     status = uct_iface_open(pd, worker, resource->tl_name, resource->dev_name,
                             0, iface_config, &iface);
-    uct_iface_config_release(iface_config);
+    uct_config_release(iface_config);
 
     if (status != UCS_OK) {
         printf("#   < failed to open interface >\n");
@@ -156,12 +156,18 @@ static ucs_status_t print_tl_info(uct_pd_h pd, const char *tl_name,
                                   int print_opts,
                                   ucs_config_print_flags_t print_flags)
 {
+    ucs_async_context_t async;
     uct_worker_h worker;
     ucs_status_t status;
     unsigned i;
 
+    status = ucs_async_context_init(&async, UCS_ASYNC_MODE_THREAD);
+    if (status != UCS_OK) {
+        return status;
+    }
+
     /* coverity[alloc_arg] */
-    status = uct_worker_create(NULL, UCS_THREAD_MODE_MULTI, &worker);
+    status = uct_worker_create(&async, UCS_THREAD_MODE_MULTI, &worker);
     if (status != UCS_OK) {
         goto out;
     }
@@ -180,6 +186,7 @@ static ucs_status_t print_tl_info(uct_pd_h pd, const char *tl_name,
 
     uct_worker_destroy(worker);
 out:
+    ucs_async_context_cleanup(&async);
     return status;
 }
 
@@ -191,10 +198,17 @@ static void print_pd_info(const char *pd_name, int print_opts,
     unsigned resource_index, j, num_resources, count;
     ucs_status_t status;
     const char *tl_name;
+    uct_pd_config_t *pd_config;
     uct_pd_attr_t pd_attr;
     uct_pd_h pd;
 
-    status = uct_pd_open(pd_name, &pd);
+    status = uct_pd_config_read(pd_name, NULL, NULL, &pd_config);
+    if (status != UCS_OK) {
+        goto out;
+    }
+
+    status = uct_pd_open(pd_name, pd_config, &pd);
+    uct_config_release(pd_config);
     if (status != UCS_OK) {
         printf("# < failed to open protection domain %s >\n", pd_name);
         goto out;

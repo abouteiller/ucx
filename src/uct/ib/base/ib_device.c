@@ -10,7 +10,8 @@
 
 #include "ib_device.h"
 
-#include <uct/tl/context.h>
+#include <uct/base/uct_pd.h>
+#include <ucs/arch/bitops.h>
 #include <ucs/debug/memtrack.h>
 #include <ucs/debug/log.h>
 #include <ucs/async/async.h>
@@ -25,6 +26,13 @@
                                   IBV_ACCESS_REMOTE_WRITE | \
                                   IBV_ACCESS_REMOTE_READ | \
                                   IBV_ACCESS_REMOTE_ATOMIC)
+
+static ucs_config_field_t uct_ib_pd_config_table[] = {
+  {"", "", NULL,
+   ucs_offsetof(uct_ib_pd_config_t, super), UCS_CONFIG_TYPE_TABLE(uct_pd_config_table)},
+
+  {NULL}
+};
 
 #if ENABLE_STATS
 static ucs_stats_class_t uct_ib_device_stats_class = {
@@ -91,9 +99,10 @@ static ucs_status_t uct_ib_pd_query(uct_pd_h pd, uct_pd_attr_t *pd_attr)
 {
     uct_ib_device_t *dev = ucs_derived_of(pd, uct_ib_device_t);
 
-    pd_attr->cap.max_alloc = ULONG_MAX; /* TODO query device */
-    pd_attr->cap.max_reg   = ULONG_MAX; /* TODO query device */
-    pd_attr->cap.flags     = UCT_PD_FLAG_REG;
+    pd_attr->cap.max_alloc    = ULONG_MAX; /* TODO query device */
+    pd_attr->cap.max_reg      = ULONG_MAX; /* TODO query device */
+    pd_attr->cap.flags        = UCT_PD_FLAG_REG;
+    pd_attr->rkey_packed_size = sizeof(uint32_t);
 
     if (IBV_EXP_HAVE_CONTIG_PAGES(&dev->dev_attr)) {
         pd_attr->cap.flags |= UCT_PD_FLAG_ALLOC;
@@ -290,6 +299,13 @@ static ucs_status_t uct_ib_device_create(struct ibv_device *ibv_device,
 
     setenv("MLX5_TOTAL_UUARS",       "64", 1);
     setenv("MLX5_NUM_LOW_LAT_UUARS", "60", 1);
+
+    ret = ibv_fork_init();
+    if (ret) {
+        ucs_error("ibv_fork_init() failed: %m");
+        status = UCS_ERR_IO_ERROR;
+        goto err;
+    }
 
     /* Open verbs context */
     ibv_context = ibv_open_device(ibv_device);
@@ -686,7 +702,8 @@ out:
     return status;
 }
 
-static ucs_status_t uct_ib_pd_open(const char *pd_name, uct_pd_h *pd_p)
+static ucs_status_t uct_ib_pd_open(const char *pd_name, const uct_pd_config_t *pd_config,
+                                   uct_pd_h *pd_p)
 {
     char tmp_pd_name[UCT_PD_NAME_MAX];
     struct ibv_device **device_list;
@@ -724,5 +741,6 @@ out:
 
 UCT_PD_COMPONENT_DEFINE(uct_ib_pd, UCT_IB_PD_PREFIX,
                         uct_ib_query_pd_resources, uct_ib_pd_open, NULL,
-                        sizeof(uint32_t), uct_ib_rkey_unpack,
-                        (void*)ucs_empty_function_return_success /* release */)
+                        uct_ib_rkey_unpack,
+                        (void*)ucs_empty_function_return_success /* release */,
+                        "IB_", uct_ib_pd_config_table, uct_ib_pd_config_t);

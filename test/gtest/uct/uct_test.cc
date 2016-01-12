@@ -27,10 +27,14 @@ uct_test::uct_test() {
     status = uct_iface_config_read(GetParam()->tl_name.c_str(), NULL, NULL,
                                    &m_iface_config);
     ASSERT_UCS_OK(status);
+    status = uct_pd_config_read(GetParam()->pd_name.c_str(), NULL, NULL,
+                                &m_pd_config);
+    ASSERT_UCS_OK(status);
 }
 
 uct_test::~uct_test() {
-    uct_iface_config_release(m_iface_config);
+    uct_config_release(m_iface_config);
+    uct_config_release(m_pd_config);
 }
 
 std::vector<const resource*> uct_test::enum_resources(const std::string& tl_name,
@@ -49,7 +53,13 @@ std::vector<const resource*> uct_test::enum_resources(const std::string& tl_name
 
         for (unsigned i = 0; i < num_pd_resources; ++i) {
             uct_pd_h pd;
-            status = uct_pd_open(pd_resources[i].pd_name, &pd);
+            uct_pd_config_t *pd_config;
+            status = uct_pd_config_read(pd_resources[i].pd_name, NULL, NULL,
+                                        &pd_config);
+            ASSERT_UCS_OK(status);
+
+            status = uct_pd_open(pd_resources[i].pd_name, pd_config, &pd);
+            uct_config_release(pd_config);
             ASSERT_UCS_OK(status);
 
             uct_pd_attr_t pd_attr;
@@ -95,18 +105,26 @@ void uct_test::check_caps(uint64_t flags) {
 
 void uct_test::modify_config(const std::string& name, const std::string& value) {
     ucs_status_t status;
-    status = uct_iface_config_modify(m_iface_config, name.c_str(), value.c_str());
+    status = uct_config_modify(m_iface_config, name.c_str(), value.c_str());
 
-    if (status == UCS_ERR_INVALID_PARAM) {
-        test_base::modify_config(name, value);
+    if (status == UCS_ERR_NO_ELEM) {
+        status = uct_config_modify(m_pd_config, name.c_str(), value.c_str());
+        if (status == UCS_ERR_NO_ELEM) {
+            test_base::modify_config(name, value);
+        } else if (status != UCS_OK) {
+            UCS_TEST_ABORT("Couldn't modify pd config parameter: " << name.c_str() <<
+                           " to " << value.c_str() << ": " << ucs_status_string(status));
+        }
+
     } else if (status != UCS_OK) {
-        UCS_TEST_ABORT("Couldn't modify config parameter: "
-                        << name.c_str() << " to " << value.c_str());
+        UCS_TEST_ABORT("Couldn't modify iface config parameter: " << name.c_str() <<
+                       " to " << value.c_str() << ": " << ucs_status_string(status));
     }
 }
 
 uct_test::entity* uct_test::create_entity(size_t rx_headroom) {
-    entity *new_ent = new entity(*GetParam(), m_iface_config, rx_headroom);
+    entity *new_ent = new entity(*GetParam(), m_iface_config, rx_headroom,
+                                 m_pd_config);
     return new_ent;
 }
 
@@ -120,19 +138,27 @@ void uct_test::progress() const {
     }
 }
 
+void uct_test::flush() const {
+    FOR_EACH_ENTITY(iter) {
+        (*iter)->flush();
+    }
+}
+
 uct_test::entity::entity(const resource& resource, uct_iface_config_t *iface_config,
-                         size_t rx_headroom) {
+                         size_t rx_headroom, uct_pd_config_t *pd_config) {
+    ucs_status_t status;
+
     UCS_TEST_CREATE_HANDLE(uct_worker_h, m_worker, uct_worker_destroy,
-                           uct_worker_create, NULL, UCS_THREAD_MODE_MULTI /* TODO */);
+                           uct_worker_create, &m_async.m_async, UCS_THREAD_MODE_MULTI /* TODO */);
 
     UCS_TEST_CREATE_HANDLE(uct_pd_h, m_pd, uct_pd_close,
-                           uct_pd_open, resource.pd_name.c_str());
+                           uct_pd_open, resource.pd_name.c_str(), pd_config);
 
     UCS_TEST_CREATE_HANDLE(uct_iface_h, m_iface, uct_iface_close,
                            uct_iface_open, m_pd, m_worker, resource.tl_name.c_str(),
                            resource.dev_name.c_str(), rx_headroom, iface_config);
 
-    ucs_status_t status = uct_iface_query(m_iface, &m_iface_attr);
+    status = uct_iface_query(m_iface, &m_iface_attr);
     ASSERT_UCS_OK(status);
 }
 
@@ -367,12 +393,20 @@ void uct_test::mapped_buffer::pattern_check(uint64_t seed) {
     pattern_check(ptr(), length(), seed);
 }
 
-void uct_test::mapped_buffer::pattern_check(void *buffer, size_t length, uint64_t seed) {
-    char* end = (char*)buffer + length;
-    uint64_t *ptr = (uint64_t*)buffer;
-    while ((char*)(ptr + 1) <= end) {
+void uct_test::mapped_buffer::pattern_check(const void *buffer, size_t length) {
+    if (length > sizeof(uint64_t)) {
+        pattern_check(buffer, length, *(const uint64_t*)buffer);
+    }
+}
+
+void uct_test::mapped_buffer::pattern_check(const void *buffer, size_t length,
+                                            uint64_t seed) {
+    const char* end = (const char*)buffer + length;
+    const uint64_t *ptr = (const uint64_t*)buffer;
+
+    while ((const char*)(ptr + 1) <= end) {
        if (*ptr != seed) {
-            UCS_TEST_ABORT("At offset " << ((char*)ptr - (char*)buffer) << ": " <<
+            UCS_TEST_ABORT("At offset " << ((const char*)ptr - (const char*)buffer) << ": " <<
                            "Expected: 0x" << std::hex << seed << " " <<
                            "Got: 0x" << std::hex << (*ptr) << std::dec);
         }
@@ -380,14 +414,14 @@ void uct_test::mapped_buffer::pattern_check(void *buffer, size_t length, uint64_
         ++ptr;
     }
 
-    size_t remainder = (end - (char*)ptr);
+    size_t remainder = (end - (const char*)ptr);
     if (remainder > 0) {
         ucs_assert(remainder < sizeof(*ptr));
         uint64_t mask = UCS_MASK_SAFE(remainder * 8 * sizeof(char));
         uint64_t value = 0;
         memcpy(&value, ptr, remainder);
         if (value != (seed & mask)) {
-             UCS_TEST_ABORT("At offset " << ((char*)ptr - (char*)buffer) <<
+             UCS_TEST_ABORT("At offset " << ((const char*)ptr - (const char*)buffer) <<
                             " (remainder " << remainder << ") : " <<
                             "Expected: 0x" << std::hex << (seed & mask) << " " <<
                             "Mask: 0x" << std::hex << mask << " " <<
@@ -423,7 +457,31 @@ uct_rkey_t uct_test::mapped_buffer::rkey() const {
     return m_rkey.rkey;
 }
 
+size_t uct_test::mapped_buffer::pack(void *dest, void *arg) {
+    const mapped_buffer* buf = (const mapped_buffer*)arg;
+    memcpy(dest, buf->ptr(), buf->length());
+    return buf->length();
+}
+
 std::ostream& operator<<(std::ostream& os, const resource* resource) {
     return os << resource->name();
 }
+
+uct_test::entity::async_wrapper::async_wrapper()
+{
+    ucs_status_t status;
+
+    /* Initialize context */
+    status = ucs_async_context_init(&m_async, UCS_ASYNC_MODE_THREAD);
+    if (UCS_OK != status) {
+        fprintf(stderr, "Failed to init async context.\n");fflush(stderr);
+    }
+    ASSERT_UCS_OK(status);
+}
+
+uct_test::entity::async_wrapper::~async_wrapper()
+{
+    ucs_async_context_cleanup(&m_async);
+}
+
 

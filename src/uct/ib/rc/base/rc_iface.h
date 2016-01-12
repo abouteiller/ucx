@@ -9,8 +9,9 @@
 
 #include "rc_def.h"
 
-#include <uct/tl/tl_base.h>
+#include <uct/base/uct_iface.h>
 #include <uct/ib/base/ib_iface.h>
+#include <ucs/datastruct/arbiter.h>
 #include <ucs/datastruct/queue.h>
 #include <ucs/debug/log.h>
 
@@ -58,6 +59,7 @@ struct uct_rc_iface {
         uct_rc_iface_send_op_t *ops;
         unsigned             cq_available;
         unsigned             next_op;
+        ucs_arbiter_t        arbiter;
     } tx;
 
     struct {
@@ -70,10 +72,10 @@ struct uct_rc_iface {
         unsigned             tx_qp_len;
         unsigned             tx_min_sge;
         unsigned             tx_min_inline;
-        unsigned             tx_moderation;
         unsigned             tx_ops_mask;
         unsigned             rx_max_batch;
         unsigned             rx_inline;
+        uint16_t             tx_moderation;
         uint8_t              min_rnr_timer;
         uint8_t              timeout;
         uint8_t              rnr_retry;
@@ -101,7 +103,7 @@ struct uct_rc_iface_send_op {
     uint16_t                      sn;
     unsigned                      length;
     union {
-        void                      *result;
+        void                      *buffer;
         void                      *unpack_arg;
     };
     uct_completion_t              *user_comp;
@@ -162,14 +164,6 @@ static UCS_F_ALWAYS_INLINE int
 uct_rc_iface_have_tx_cqe_avail(uct_rc_iface_t* iface)
 {
     return iface->tx.cq_available > 0;
-}
-
-static UCS_F_ALWAYS_INLINE void
-uct_rc_iface_invoke_am(uct_rc_iface_t *iface, uct_rc_hdr_t *hdr, unsigned length,
-                       uct_ib_iface_recv_desc_t *desc)
-{
-    uct_ib_iface_invoke_am(&iface->super, hdr->am_id, hdr + 1,
-                           length - sizeof(*hdr), desc);
 }
 
 static UCS_F_ALWAYS_INLINE uct_rc_iface_send_op_t*

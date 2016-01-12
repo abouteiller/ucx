@@ -14,9 +14,20 @@
 #define UCT_MM_SYSV_PERM (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP)
 #define UCT_MM_SYSV_MSTR (UCT_MM_SYSV_PERM | IPC_CREAT | IPC_EXCL)
 
+typedef struct uct_sysv_pd_config {
+    uct_mm_pd_config_t      super;
+} uct_sysv_pd_config_t;
+
+static ucs_config_field_t uct_sysv_pd_config_table[] = {
+  {"MM_", "", NULL,
+   ucs_offsetof(uct_sysv_pd_config_t, super), UCS_CONFIG_TYPE_TABLE(uct_mm_pd_config_table)},
+
+  {NULL}
+};
+
 static ucs_status_t
-uct_sysv_alloc(size_t *length_p, ucs_ternary_value_t hugetlb,
-               void **address_p, uct_mm_id_t *mmid_p UCS_MEMTRACK_ARG)
+uct_sysv_alloc(uct_pd_h pd, size_t *length_p, ucs_ternary_value_t hugetlb,
+               void **address_p, uct_mm_id_t *mmid_p, const char **path_p UCS_MEMTRACK_ARG)
 {
     ucs_status_t status = UCS_ERR_NO_MEMORY;
     int flags, shmid = 0;
@@ -59,7 +70,7 @@ out_ok:
 static ucs_status_t uct_sysv_attach(uct_mm_id_t mmid, size_t length,
                                     void *remote_address,
                                     void **local_address,
-                                    uint64_t *cookie)
+                                    uint64_t *cookie, const char *path)
 {
     void *ptr;
 
@@ -85,13 +96,20 @@ static ucs_status_t uct_sysv_detach(uct_mm_remote_seg_t *mm_desc)
     return UCS_OK;
 }
 
-static ucs_status_t uct_sysv_free(void *address, uct_mm_id_t mm_id, size_t length)
+static ucs_status_t uct_sysv_free(void *address, uct_mm_id_t mm_id, size_t length,
+                                  const char *path)
 {
     return ucs_sysv_free(address);
 }
 
+static size_t uct_sysv_get_path_size(uct_pd_h pd)
+{
+    return 0;
+}
+
 static uct_mm_mapper_ops_t uct_sysv_mapper_ops = {
    .query   = ucs_empty_function_return_success,
+   .get_path_size = uct_sysv_get_path_size,
    .reg     = NULL,
    .dereg   = NULL,
    .alloc   = uct_sysv_alloc,
@@ -100,5 +118,5 @@ static uct_mm_mapper_ops_t uct_sysv_mapper_ops = {
    .free    = uct_sysv_free
 };
 
-UCT_MM_COMPONENT_DEFINE(uct_sysv_pd, "sysv", &uct_sysv_mapper_ops)
+UCT_MM_COMPONENT_DEFINE(uct_sysv_pd, "sysv", &uct_sysv_mapper_ops, uct_sysv, "SYSV_")
 UCT_PD_REGISTER_TL(&uct_sysv_pd, &uct_mm_tl);

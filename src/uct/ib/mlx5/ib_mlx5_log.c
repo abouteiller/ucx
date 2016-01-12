@@ -111,20 +111,35 @@ void uct_ib_mlx5_completion_with_err(struct mlx5_err_cqe *ecqe)
 }
 
 static unsigned uct_ib_mlx5_parse_dseg(void **dseg_p, void *qstart, void *qend,
-                                       struct ibv_sge *sg, int *is_inline)
+                                       struct ibv_sge *sg_list, int *index,
+                                       int *is_inline)
 {
     struct mlx5_wqe_data_seg *dpseg;
     struct mlx5_wqe_inl_data_seg *inl;
+    struct ibv_sge *sg = &sg_list[*index];
+    int byte_count;
+    void *addr;
     int ds;
 
     inl = *dseg_p;
     if (inl->byte_count & htonl(MLX5_INLINE_SEG)) {
-        sg->addr   = (uintptr_t)(inl + 1);
+        addr       = inl + 1;
+        sg->addr   = (uintptr_t)addr;
         sg->lkey   = 0;
-        sg->length = ntohl(inl->byte_count) & ~MLX5_INLINE_SEG;
+        byte_count = ntohl(inl->byte_count) & ~MLX5_INLINE_SEG;
+        if (addr + byte_count > qend) {
+            sg->length = qend - addr;
+            (sg + 1)->addr   = (uintptr_t)qstart;
+            (sg + 1)->lkey   = 0;
+            (sg + 1)->length = byte_count - sg->length;
+            ++(*index);
+        } else {
+            sg->length = byte_count;
+        }
         *is_inline = 1;
-        ds         = ucs_div_round_up(sizeof(*inl) + sg->length,
+        ds         = ucs_div_round_up(sizeof(*inl) + byte_count,
                                      UCT_IB_MLX5_WQE_SEG_SIZE);
+        ++(*index);
     } else {
         dpseg      = *dseg_p;
         sg->addr   = ntohll(dpseg->addr);
@@ -132,6 +147,7 @@ static unsigned uct_ib_mlx5_parse_dseg(void **dseg_p, void *qstart, void *qend,
         sg->lkey   = ntohl(dpseg->lkey);
         *is_inline = 0;
         ds         = 1;
+        ++(*index);
     }
 
     *dseg_p += ds * UCT_IB_MLX5_WQE_SEG_SIZE;
@@ -158,8 +174,9 @@ static void uct_ib_mlx5_dump_dgram(char *buf, size_t max, struct mlx5_wqe_datagr
              ntohl(mlx5_av_base(&seg->av)->dqp_dct) & ~UCT_IB_MLX5_EXTENDED_UD_AV);
 }
 
-static void uct_ib_mlx5_wqe_dump(enum ibv_qp_type qp_type, void *wqe, void *qstart,
-                                 void *qend, uct_log_data_dump_func_t packet_dump_cb,
+static void uct_ib_mlx5_wqe_dump(uct_ib_iface_t *iface, enum ibv_qp_type qp_type,
+                                 void *wqe, void *qstart, void *qend,
+                                 uct_log_data_dump_func_t packet_dump_cb,
                                  char *buffer, size_t max)
 {
     static uct_ib_opcode_t opcodes[] = {
@@ -288,23 +305,24 @@ static void uct_ib_mlx5_wqe_dump(enum ibv_qp_type qp_type, void *wqe, void *qsta
     inline_bitmap = 0;
 
     while ((ds > 0) && (i < sizeof(sg_list) / sizeof(sg_list[0]))) {
-        ds -= uct_ib_mlx5_parse_dseg(&seg, qstart, qend, &sg_list[i], &is_inline);
+        ds -= uct_ib_mlx5_parse_dseg(&seg, qstart, qend, sg_list, &i, &is_inline);
         if (is_inline) {
             inline_bitmap |= UCS_BIT(i);
         }
         s += strlen(s);
-        ++i;
     }
 
-    uct_ib_log_dump_sg_list(sg_list, i, inline_bitmap, packet_dump_cb, s, ends - s);
+    uct_ib_log_dump_sg_list(iface, UCT_AM_TRACE_TYPE_SEND, sg_list, i,
+                            inline_bitmap, packet_dump_cb, s, ends - s);
 }
 
 void __uct_ib_mlx5_log_tx(const char *file, int line, const char *function,
-                          enum ibv_qp_type qp_type, void *wqe, void *qstart,
-                          void *qend, uct_log_data_dump_func_t packet_dump_cb)
+                          uct_ib_iface_t *iface, enum ibv_qp_type qp_type,
+                          void *wqe, void *qstart, void *qend,
+                          uct_log_data_dump_func_t packet_dump_cb)
 {
     char buf[256] = {0};
-    uct_ib_mlx5_wqe_dump(qp_type, wqe, qstart, qend, packet_dump_cb,
+    uct_ib_mlx5_wqe_dump(iface, qp_type, wqe, qstart, qend, packet_dump_cb,
                          buf, sizeof(buf) - 1);
     uct_log_data(file, line, function, buf);
 }
@@ -326,12 +344,13 @@ void uct_ib_mlx5_cqe_dump(const char *file, int line, const char *function, stru
 }
 
 void __uct_ib_mlx5_log_rx(const char *file, int line, const char *function,
-                          enum ibv_qp_type qp_type, struct mlx5_cqe64 *cqe, void *data,
+                          uct_ib_iface_t *iface, enum ibv_qp_type qp_type,
+                          struct mlx5_cqe64 *cqe, void *data,
                           uct_log_data_dump_func_t packet_dump_cb)
 {
     char buf[256] = {0};
 
-    uct_ib_log_dump_recv_completion(qp_type,
+    uct_ib_log_dump_recv_completion(iface, qp_type,
                                     ntohl(cqe->sop_drop_qpn) & UCS_MASK(UCT_IB_QPN_ORDER),
                                     ntohl(cqe->flags_rqpn) & UCS_MASK(UCT_IB_QPN_ORDER),
                                     ntohs(cqe->slid),

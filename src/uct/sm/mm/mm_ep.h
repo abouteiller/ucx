@@ -8,9 +8,10 @@
 #define UCT_MM_EP_H
 
 #include "mm_iface.h"
-#include <uct/tl/tl_log.h>
+
 #include <ucs/datastruct/sglib.h>
 #include <ucs/datastruct/sglib_wrapper.h>
+
 
 struct uct_mm_ep {
     uct_base_ep_t       super;
@@ -20,9 +21,14 @@ struct uct_mm_ep {
     uct_mm_fifo_ctl_t    *fifo_ctl;   /* pointer to the destination's ctl struct in the receive fifo */
     void                 *fifo;       /* fifo elements (destination's receive fifo) */
 
+    uint64_t             cached_tail; /* the sender's own copy of the remote FIFO's tail.
+                                         it is not always updated with the actual remote tail value */
+
     /* mapped remote memory chunks to which remote descriptors belong to.
      * (after attaching to them) */
     uct_mm_remote_seg_t  *remote_segments_hash[UCT_MM_BASE_ADDRESS_HASH_SIZE];
+
+    ucs_arbiter_group_t  arb_group;   /* the group that holds this ep's pending operations */
 };
 
 UCS_CLASS_DECLARE_NEW_FUNC(uct_mm_ep_t, uct_ep_t, uct_iface_t*,
@@ -33,14 +39,12 @@ UCS_CLASS_DECLARE_DELETE_FUNC(uct_mm_ep_t, uct_ep_t);
 ucs_status_t uct_mm_ep_put_short(uct_ep_h tl_ep, const void *buffer,
                                  unsigned length, uint64_t remote_addr, 
                                  uct_rkey_t rkey);
-ucs_status_t uct_mm_ep_put_bcopy(uct_ep_h ep, uct_pack_callback_t pack_cb,
-                                 void *arg, size_t length, 
-                                 uint64_t remote_addr, uct_rkey_t rkey);
+ssize_t uct_mm_ep_put_bcopy(uct_ep_h ep, uct_pack_callback_t pack_cb,
+                            void *arg, uint64_t remote_addr, uct_rkey_t rkey);
 ucs_status_t uct_mm_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
                                 const void *payload, unsigned length);
-ucs_status_t uct_mm_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
-                                uct_pack_callback_t pack_cb, void *arg,
-                                size_t length);
+ssize_t uct_mm_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id, uct_pack_callback_t pack_cb,
+                           void *arg);
 ucs_status_t uct_mm_ep_atomic_add64(uct_ep_h tl_ep, uint64_t add,
                                     uint64_t remote_addr, uct_rkey_t rkey);
 ucs_status_t uct_mm_ep_atomic_fadd64(uct_ep_h tl_ep, uint64_t add,
@@ -69,6 +73,14 @@ ucs_status_t uct_mm_ep_get_bcopy(uct_ep_h ep, uct_unpack_callback_t unpack_cb,
                                  void *arg, size_t length,
                                  uint64_t remote_addr, uct_rkey_t rkey,
                                  uct_completion_t *comp);
+
+ucs_status_t uct_mm_ep_pending_add(uct_ep_h tl_ep, uct_pending_req_t *n);
+
+void uct_mm_ep_pending_purge(uct_ep_h ep, uct_pending_callback_t cb);
+
+ucs_arbiter_cb_result_t uct_mm_ep_process_pending(ucs_arbiter_t *arbiter,
+                                                  ucs_arbiter_elem_t *elem,
+                                                  void *arg);
 
 static inline uint64_t uct_mm_remote_seg_hash(uct_mm_remote_seg_t *seg)
 {

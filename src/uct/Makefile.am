@@ -23,14 +23,14 @@ nobase_dist_libuct_la_HEADERS = \
 	api/version.h
 
 noinst_HEADERS = \
-	tl/context.h \
-	tl/tl_base.h \
-	tl/tl_log.h
+	base/uct_pd.h \
+	base/uct_iface.h \
+	base/uct_log.h
 
 libuct_la_SOURCES = \
-	tl/context.c \
-	tl/memory.c \
-	tl/tl_base.c
+	base/uct_pd.c \
+	base/uct_mem.c \
+	base/uct_iface.c
 
 if HAVE_IB
 libuct_la_CPPFLAGS += $(IBVERBS_CPPFLAGS)
@@ -105,6 +105,7 @@ endif
 endif
 
 if HAVE_TL_CM
+libuct_la_LDFLAGS += $(IBCM_LIBS)
 libuct_la_SOURCES += \
 	ib/cm/cm_iface.c \
 	ib/cm/cm_ep.c
@@ -126,14 +127,19 @@ noinst_HEADERS += \
     ugni/base/ugni_iface.h \
     ugni/base/ugni_ep.h \
     ugni/rdma/ugni_rdma_iface.h \
-    ugni/rdma/ugni_rdma_ep.h
+    ugni/rdma/ugni_rdma_ep.h \
+    ugni/udt/ugni_udt_iface.h \
+    ugni/udt/ugni_udt_ep.h
 
 libuct_la_SOURCES += \
     ugni/base/ugni_pd.c \
     ugni/base/ugni_device.c \
     ugni/base/ugni_iface.c \
+    ugni/base/ugni_ep.c \
     ugni/rdma/ugni_rdma_iface.c \
-    ugni/rdma/ugni_rdma_ep.c
+    ugni/rdma/ugni_rdma_ep.c \
+    ugni/udt/ugni_udt_iface.c \
+    ugni/udt/ugni_udt_ep.c
 endif
 
 if HAVE_CUDA

@@ -240,9 +240,12 @@ static ucs_status_t ucx_perf_test_check_params(ucx_perf_params_t *params)
 
 void uct_perf_iface_flush_b(ucx_perf_context_t *perf)
 {
-    while (uct_iface_flush(perf->uct.iface) == UCS_ERR_NO_RESOURCE) {
+    ucs_status_t status;
+
+    do {
+        status = uct_iface_flush(perf->uct.iface);
         uct_worker_progress(perf->uct.worker);
-    }
+    } while(status == UCS_INPROGRESS || status == UCS_ERR_NO_RESOURCE);
 }
 
 static inline uint64_t __get_flag(uct_perf_data_layout_t layout, uint64_t short_f,
@@ -578,16 +581,17 @@ static ucs_status_t ucp_perf_test_check_params(ucx_perf_params_t *params,
     case UCX_PERF_CMD_FADD:
     case UCX_PERF_CMD_SWAP:
     case UCX_PERF_CMD_CSWAP:
-        if ((params->message_size != sizeof(uint32_t)) &&
-            (params->message_size != sizeof(uint64_t)))
-        {
+        if (params->message_size == sizeof(uint32_t)) {
+            *features = UCP_FEATURE_AMO32;
+        } else if (params->message_size == sizeof(uint64_t)) {
+            *features = UCP_FEATURE_AMO64;
+        } else {
             if (params->flags & UCX_PERF_TEST_FLAG_VERBOSE) {
                 ucs_error("Atomic size should be either 32 or 64 bit");
             }
             return UCS_ERR_INVALID_PARAM;
         }
 
-        *features = UCP_FEATURE_AMO;
         break;
     case UCX_PERF_CMD_TAG:
         *features = UCP_FEATURE_TAG;
@@ -778,6 +782,7 @@ static ucs_status_t uct_perf_create_pd(ucx_perf_context_t *perf)
     unsigned j, num_tl_resources;
     ucs_status_t status;
     uct_pd_h pd;
+    uct_pd_config_t *pd_config;
 
     status = uct_query_pd_resources(&pd_resources, &num_pd_resources);
     if (status != UCS_OK) {
@@ -785,7 +790,13 @@ static ucs_status_t uct_perf_create_pd(ucx_perf_context_t *perf)
     }
 
     for (i = 0; i < num_pd_resources; ++i) {
-        status = uct_pd_open(pd_resources[i].pd_name, &pd);
+        status = uct_pd_config_read(pd_resources[i].pd_name, NULL, NULL, &pd_config);
+        if (status != UCS_OK) {
+            goto out_release_pd_resources;
+        }
+
+        status = uct_pd_open(pd_resources[i].pd_name, pd_config, &pd);
+        uct_config_release(pd_config);
         if (status != UCS_OK) {
             goto out_release_pd_resources;
         }
@@ -849,7 +860,7 @@ static ucs_status_t uct_perf_setup(ucx_perf_context_t *perf, ucx_perf_params_t *
 
     status = uct_iface_open(perf->uct.pd, perf->uct.worker, params->uct.tl_name,
                             params->uct.dev_name, 0, iface_config, &perf->uct.iface);
-    uct_iface_config_release(iface_config);
+    uct_config_release(iface_config);
     if (status != UCS_OK) {
         ucs_error("Failed to open iface: %s", ucs_status_string(status));
         goto out_destroy_pd;
@@ -899,6 +910,7 @@ static void uct_perf_cleanup(ucx_perf_context_t *perf)
 
 static ucs_status_t ucp_perf_setup(ucx_perf_context_t *perf, ucx_perf_params_t *params)
 {
+    ucp_params_t ucp_params;
     ucp_config_t *config;
     ucs_status_t status;
     uint64_t features;
@@ -913,7 +925,12 @@ static ucs_status_t ucp_perf_setup(ucx_perf_context_t *perf, ucx_perf_params_t *
         goto err;
     }
 
-    status = ucp_init(features, 0, config, &perf->ucp.context);
+    ucp_params.features        = features;
+    ucp_params.request_size    = 0;
+    ucp_params.request_init    = NULL;
+    ucp_params.request_cleanup = NULL;
+
+    status = ucp_init(&ucp_params, config, &perf->ucp.context);
     ucp_config_release(config);
     if (status != UCS_OK) {
         goto err;

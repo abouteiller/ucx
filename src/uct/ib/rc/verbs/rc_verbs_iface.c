@@ -9,7 +9,9 @@
 #include <uct/api/uct.h>
 #include <uct/ib/base/ib_device.h>
 #include <uct/ib/base/ib_log.h>
-#include <uct/tl/context.h>
+#include <uct/base/uct_pd.h>
+#include <ucs/arch/bitops.h>
+#include <ucs/arch/cpu.h>
 #include <ucs/debug/log.h>
 #include <string.h>
 
@@ -75,9 +77,7 @@ uct_rc_verbs_iface_poll_tx(uct_rc_verbs_iface_t *iface)
 {
     struct ibv_wc wc[UCT_IB_MAX_WC];
     uct_rc_verbs_ep_t *ep;
-    uct_rc_iface_send_op_t *op;
     unsigned count;
-    uint16_t sn;
     int i, ret;
 
     ret = ibv_poll_cq(iface->super.super.send_cq, UCT_IB_MAX_WC, wc);
@@ -95,7 +95,8 @@ uct_rc_verbs_iface_poll_tx(uct_rc_verbs_iface_t *iface)
 
         UCS_STATS_UPDATE_COUNTER(iface->super.stats, UCT_RC_IFACE_STAT_TX_COMPLETION, 1);
 
-        ep = ucs_derived_of(uct_rc_iface_lookup_ep(&iface->super, wc[i].qp_num), uct_rc_verbs_ep_t);
+        ep = ucs_derived_of(uct_rc_iface_lookup_ep(&iface->super, wc[i].qp_num),
+                            uct_rc_verbs_ep_t);
         ucs_assert(ep != NULL);
 
         count = wc[i].wr_id + 1; /* Number of sends with WC completes in batch */
@@ -103,11 +104,8 @@ uct_rc_verbs_iface_poll_tx(uct_rc_verbs_iface_t *iface)
         ep->tx.completion_count     += count;
         ++iface->super.tx.cq_available;
 
-        sn = ep->tx.completion_count;
-        ucs_queue_for_each_extract(op, &ep->super.outstanding, queue,
-                                   UCS_CIRCULAR_COMPARE16(op->sn, <=, sn)) {
-            op->handler(op);
-        }
+        uct_rc_ep_process_tx_completion(&iface->super, &ep->super,
+                                        ep->tx.completion_count);
     }
 }
 
@@ -118,6 +116,7 @@ uct_rc_verbs_iface_poll_rx(uct_rc_verbs_iface_t *iface)
     uct_rc_hdr_t *hdr;
     struct ibv_wc wc[UCT_IB_MAX_WC];
     int i, ret;
+    ucs_status_t status;
 
     ret = ibv_poll_cq(iface->super.super.recv_cq, UCT_IB_MAX_WC, wc);
     if (ret > 0) {
@@ -129,22 +128,24 @@ uct_rc_verbs_iface_poll_rx(uct_rc_verbs_iface_t *iface)
             UCS_STATS_UPDATE_COUNTER(iface->super.stats, UCT_RC_IFACE_STAT_RX_COMPLETION, 1);
 
             desc = (void*)wc[i].wr_id;
-            uct_ib_iface_desc_received(&iface->super.super, desc, wc[i].byte_len, 1);
-
             hdr = uct_ib_iface_recv_desc_hdr(&iface->super.super, desc);
-            uct_ib_log_recv_completion(IBV_QPT_RC, &wc[i], hdr, uct_rc_ep_am_packet_dump);
+            VALGRIND_MAKE_MEM_DEFINED(hdr, wc[i].byte_len);
 
-            uct_rc_iface_invoke_am(&iface->super, hdr, wc[i].byte_len, desc);
+            uct_ib_log_recv_completion(&iface->super.super, IBV_QPT_RC, &wc[i],
+                                       hdr, uct_rc_ep_am_packet_dump);
+            uct_ib_iface_invoke_am(&iface->super.super, hdr->am_id, hdr + 1,
+                                   wc[i].byte_len - sizeof(*hdr), desc);
         }
 
         iface->super.rx.available += ret;
-        return UCS_OK;
+        status = UCS_OK;
     } else if (ret == 0) {
-        uct_rc_verbs_iface_post_recv(iface, 0);
-        return UCS_ERR_NO_PROGRESS;
+        status = UCS_ERR_NO_PROGRESS;
     } else {
         ucs_fatal("Failed to poll receive CQ");
     }
+    uct_rc_verbs_iface_post_recv(iface, 0);
+    return status;
 }
 
 static void uct_rc_verbs_iface_progress(void *arg)
@@ -351,8 +352,8 @@ uct_iface_ops_t uct_rc_verbs_iface_ops = {
     .ep_atomic_fadd32    = uct_rc_verbs_ep_atomic_fadd32,
     .ep_atomic_swap32    = uct_rc_verbs_ep_atomic_swap32,
     .ep_atomic_cswap32   = uct_rc_verbs_ep_atomic_cswap32,
-    .ep_pending_add      = (void*)ucs_empty_function_return_success, /* TODO */
-    .ep_pending_purge    = (void*)ucs_empty_function_return_success,
+    .ep_pending_add      = uct_rc_ep_pending_add,
+    .ep_pending_purge    = uct_rc_ep_pending_purge,
     .ep_flush            = uct_rc_verbs_ep_flush
 };
 

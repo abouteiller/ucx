@@ -109,10 +109,15 @@ typedef struct uct_ud_neth {
     uct_ud_psn_t        ack_psn;
 } UCS_S_PACKED uct_ud_neth_t;
 
+enum {
+    UCT_UD_SEND_SKB_FLAG_ACK_REQ = UCS_BIT(1)
+};
+
 typedef struct uct_ud_send_skb {
     ucs_queue_elem_t        queue;      /* in send window */
     uint32_t                lkey;
-    uint32_t                len;        /* data size */
+    uint16_t                len;        /* data size */
+    uint16_t                flags;
     uct_ud_neth_t           neth[0];
 } UCS_S_PACKED uct_ud_send_skb_t;
 
@@ -153,24 +158,6 @@ static inline void uct_ud_neth_set_am_id(uct_ud_neth_t *neth, uint8_t id)
 {
     neth->packet_type |= (id << UCT_UD_PACKET_AM_ID_SHIFT);
 }
-
-/* 
- * Allow sceduling of 'operation' on the interface. The operations
- * are executed in time of progress in round robin fashion. 
- */
-enum {
-    UCT_UD_EP_OP_NONE       = 0,
-    UCT_UD_EP_OP_ACK        = UCS_BIT(0),  /* ack data */
-    UCT_UD_EP_OP_ACK_REQ    = UCS_BIT(1),  /* request ack of sent packets */
-    UCT_UD_EP_OP_RESEND     = UCS_BIT(2),  /* resend un acked packets */
-    UCT_UD_EP_OP_CREP       = UCS_BIT(3),  /* send connection reply */
-    UCT_UD_EP_OP_INPROGRESS = UCS_BIT(7)   /* bit is set when op is sceduled */
-};
-
-typedef struct uct_ud_ep_pending_op {
-    ucs_queue_elem_t   queue;      
-    uint32_t           ops;     /* bitmask that describes which op are sceduled */
-} uct_ud_ep_pending_op_t;
 
 #endif
 

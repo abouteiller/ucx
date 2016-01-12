@@ -13,7 +13,6 @@
 
 #include <ucs/config/types.h>
 #include <ucs/datastruct/mpmc.h>
-#include <ucs/datastruct/notifier.h>
 #include <ucs/time/time.h>
 #include <ucs/debug/log.h>
 
@@ -31,7 +30,12 @@ struct ucs_async_context {
     ucs_async_mode_t  mode;          /* Event delivery mode */
     volatile uint32_t num_handlers;  /* Number of event and timer handlers */
     ucs_mpmc_queue_t  missed;        /* Miss queue */
+    ucs_time_t        last_wakeup;   /* time of the last wakeup */
 };
+
+
+/* Async event callback */
+typedef void (*ucs_async_event_cb_t)(void *arg);
 
 
 /**
@@ -54,7 +58,7 @@ void ucs_async_global_cleanup();
  *                        If NULL, safety is up to the user.
  */
 ucs_status_t ucs_async_set_event_handler(ucs_async_mode_t mode, int event_fd,
-                                         int events, ucs_notifier_chain_func_t cb,
+                                         int events, ucs_async_event_cb_t cb,
                                          void *arg, ucs_async_context_t *async);
 
 
@@ -78,7 +82,7 @@ ucs_status_t ucs_async_unset_event_handler(int event_fd);
  * @param timer_id_p      Filled with timer id.
  */
 ucs_status_t ucs_async_add_timer(ucs_async_mode_t mode, ucs_time_t interval,
-                                 ucs_notifier_chain_func_t cb, void *arg,
+                                 ucs_async_event_cb_t cb, void *arg,
                                  ucs_async_context_t *async, int *timer_id_p);
 
 
@@ -128,10 +132,10 @@ void __ucs_async_poll_missed(ucs_async_context_t *async);
  */
 static inline int ucs_async_check_miss(ucs_async_context_t *async)
 {
-    if (!ucs_mpmc_queue_is_empty(&async->missed)) {
+    if (ucs_unlikely(!ucs_mpmc_queue_is_empty(&async->missed))) {
         __ucs_async_poll_missed(async);
         return 1;
-    } else if (async->mode == UCS_ASYNC_MODE_POLL) {
+    } else if (ucs_unlikely(async->mode == UCS_ASYNC_MODE_POLL)) {
         ucs_async_poll(async);
         return 1;
     }

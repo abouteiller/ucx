@@ -105,6 +105,10 @@ const char *ucs_signal_names[] = {
     [SIGSYS + 1] = NULL
 };
 
+static void *ucs_debug_signal_restorer = &ucs_debug_signal_restorer;
+
+static int ucs_debug_backtrace_is_excluded(void *address, const char *symbol);
+
 
 static int dl_match_address(struct dl_phdr_info *info, size_t size, void *data)
 {
@@ -259,7 +263,7 @@ static int get_line_info(struct backtrace_file *file, int backoff,
  *
  * @return             Backtrace object.
  */
-backtrace_h backtrace_create(void)
+static backtrace_h ucs_debug_backtrace_create(void)
 {
     struct backtrace_file file;
     void *addresses[BACKTRACE_MAX];
@@ -292,7 +296,7 @@ backtrace_h backtrace_create(void)
  *
  * @param bckt          Backtrace object.
  */
-void backtrace_destroy(backtrace_h bckt)
+static void ucs_debug_backtrace_destroy(backtrace_h bckt)
 {
     int i;
 
@@ -376,28 +380,39 @@ int backtrace_next(backtrace_h bckt, unsigned long *address, char const ** file,
     return 1;
 }
 
+/*
+ * Filter specific functions from the head of the backtrace.
+ */
 void ucs_debug_print_backtrace(FILE *stream, int strip)
 {
     backtrace_h bckt;
     unsigned long address;
     const char *file, *function;
     unsigned line;
-    int i;
+    int exclude;
+    int i, n;
 
-    bckt = backtrace_create();
+    bckt = ucs_debug_backtrace_create();
 
     fprintf(stream, "==== backtrace ====\n");
-    i = 0;
+    exclude = 1;
+    i       = 0;
+    n       = 0;
     while (backtrace_next(bckt, &address, &file, &function, &line)) {
         if (i >= strip) {
-            fprintf(stream, "%2d 0x%016lx %s()  %s:%u\n", i, address,
-                    function ? function : "??", file ? file : "??", line);
+            exclude = exclude && ucs_debug_backtrace_is_excluded((void*)address,
+                                                                 function);
+            if (!exclude) {
+                fprintf(stream, "%2d 0x%016lx %s()  %s:%u\n", n, address,
+                        function ? function : "??", file ? file : "??", line);
+                ++n;
+            }
         }
         ++i;
     }
     fprintf(stream, "===================\n");
 
-    backtrace_destroy(bckt);
+    ucs_debug_backtrace_destroy(bckt);
 }
 
 const char *ucs_debug_get_symbol_name(void *address, char *buffer, size_t max)
@@ -405,6 +420,54 @@ const char *ucs_debug_get_symbol_name(void *address, char *buffer, size_t max)
     ucs_debug_address_info_t info;
     ucs_debug_lookup_address(address, &info);
     return strncpy(buffer, info.function, max);
+}
+
+static void ucs_debug_print_source_file(const char *file, unsigned line,
+                                        const char *function, FILE *stream)
+{
+    static const int context = 3;
+    char srcline[256];
+    unsigned n;
+    FILE *f;
+
+    f = fopen(file, "r");
+    if (f == NULL) {
+        return;
+    }
+
+    n = 0;
+    fprintf(stream, "\n");
+    fprintf(stream, "%s: [ %s() ]\n", file, function);
+    if (line > context) {
+        fprintf(stream, "      ...\n");
+    }
+    while (fgets(srcline, sizeof(srcline), f) != NULL) {
+        if (abs((int)line - (int)n) <= context) {
+            fprintf(stream, "%s %5u %s",
+                    (n == line) ? "==>" : "   ", n, srcline);
+        }
+        ++n;
+    }
+    fprintf(stream, "\n");
+
+    fclose(f);
+}
+
+static void ucs_debug_show_innermost_source_file(FILE *stream)
+{
+    const char *file, *function;
+    unsigned long address;
+    backtrace_h bckt;
+    unsigned line;
+
+    bckt = ucs_debug_backtrace_create();
+    while (backtrace_next(bckt, &address, &file, &function, &line)) {
+        if (!ucs_debug_backtrace_is_excluded((void*)address, function)) {
+            ucs_debug_print_source_file(file, line, function, stderr);
+            break;
+        }
+    }
+    ucs_debug_backtrace_destroy(bckt);
 }
 
 #else /* HAVE_DETAILED_BACKTRACE */
@@ -421,14 +484,18 @@ void ucs_debug_print_backtrace(FILE *stream, int strip)
 {
     char **symbols;
     void *addresses[BACKTRACE_MAX];
-    int count, i;
+    int count, i, n;
 
     fprintf(stream, "==== backtrace ====\n");
 
     count = backtrace(addresses, BACKTRACE_MAX);
     symbols = backtrace_symbols(addresses, count);
+    n = 0;
     for (i = strip; i < count; ++i) {
-            fprintf(stream, "   %2d  %s\n", i - strip, symbols[i]);
+        if (!ucs_debug_backtrace_is_excluded(addresses[i], symbols[i])) {
+            fprintf(stream, "   %2d  %s\n", n, symbols[i]);
+            ++n;
+        }
     }
     free(symbols);
 
@@ -448,8 +515,11 @@ const char *ucs_debug_get_symbol_name(void *address, char *buffer, size_t max)
     return strncpy(buffer, info.dli_sname, max);
 }
 
-#endif /* HAVE_DETAILED_BACKTRACE */
+static void ucs_debug_show_innermost_source_file(FILE *stream)
+{
+}
 
+#endif /* HAVE_DETAILED_BACKTRACE */
 
 static ucs_status_t ucs_debugger_attach()
 {
@@ -570,9 +640,9 @@ static ucs_status_t ucs_error_freeze()
     int ret;
 
     ucs_debug_stop_other_threads();
+    ucs_debug_show_innermost_source_file(stderr);
 
     if (pthread_mutex_trylock(&lock) == 0) {
-
         if (strlen(ucs_global_opts.gdb_command) && isatty(fileno(stdout)) &&
             isatty(fileno(stdin)))
         {
@@ -596,11 +666,134 @@ static ucs_status_t ucs_error_freeze()
     return UCS_OK;
 }
 
-static void ucs_error_signal_handler(int signo)
+static const char *ucs_signal_cause_common(int si_code)
+{
+    switch (si_code) {
+    case SI_USER      : return "kill(2) or raise(3)";
+    case SI_KERNEL    : return "Sent by the kernel";
+    case SI_QUEUE     : return "sigqueue(2)";
+    case SI_TIMER     : return "POSIX timer expired";
+    case SI_MESGQ     : return "POSIX message queue state changed";
+    case SI_ASYNCIO   : return "AIO completed";
+    case SI_SIGIO     : return "queued SIGIO";
+    case SI_TKILL     : return "tkill(2) or tgkill(2)";
+    default           : return "<unknown si_code>";
+    }
+}
+
+static const char *ucs_signal_cause_ill(int si_code)
+{
+    switch (si_code) {
+    case ILL_ILLOPC   : return "illegal opcode";
+    case ILL_ILLOPN   : return "illegal operand";
+    case ILL_ILLADR   : return "illegal addressing mode";
+    case ILL_ILLTRP   : return "illegal trap";
+    case ILL_PRVOPC   : return "privileged opcode";
+    case ILL_PRVREG   : return "privileged register";
+    case ILL_COPROC   : return "coprocessor error";
+    case ILL_BADSTK   : return "internal stack error";
+    default           : return ucs_signal_cause_common(si_code);
+    }
+}
+
+static const char *ucs_signal_cause_fpe(int si_code)
+{
+    switch (si_code) {
+    case FPE_INTDIV   : return "integer divide by zero";
+    case FPE_INTOVF   : return "integer overflow";
+    case FPE_FLTDIV   : return "floating-point divide by zero";
+    case FPE_FLTOVF   : return "floating-point overflow";
+    case FPE_FLTUND   : return "floating-point underflow";
+    case FPE_FLTRES   : return "floating-point inexact result";
+    case FPE_FLTINV   : return "floating-point invalid operation";
+    case FPE_FLTSUB   : return "subscript out of range";
+    default           : return ucs_signal_cause_common(si_code);
+    }
+}
+
+static const char *ucs_signal_cause_segv(int si_code)
+{
+    switch (si_code) {
+    case SEGV_MAPERR  : return "address not mapped to object";
+    case SEGV_ACCERR  : return "invalid permissions for mapped object";
+    default           : return ucs_signal_cause_common(si_code);
+    }
+}
+
+static const char *ucs_signal_cause_bus(int si_code)
+{
+    switch (si_code) {
+    case BUS_ADRERR   : return "nonexistent physical address";
+    case BUS_OBJERR   : return "object-specific hardware error";
+    default           : return ucs_signal_cause_common(si_code);
+    }
+}
+
+static const char *ucs_signal_cause_trap(int si_code)
+{
+    switch (si_code) {
+    case TRAP_BRKPT   : return "process breakpoint";
+    case TRAP_TRACE   : return "process trace trap";
+    default           : return ucs_signal_cause_common(si_code);
+    }
+}
+
+static const char *ucs_signal_cause_cld(int si_code)
+{
+    switch (si_code) {
+    case CLD_EXITED   : return "child has exited";
+    case CLD_KILLED   : return "child was killed";
+    case CLD_DUMPED   : return "child terminated abnormally";
+    case CLD_TRAPPED  : return "traced child has trapped";
+    case CLD_STOPPED  : return "child has stopped";
+    case CLD_CONTINUED: return "stopped child has continued";
+    default           : return NULL;
+    }
+}
+
+static void ucs_debug_log_signal(int signo, const char *cause, const char *fmt, ...)
+{
+    char buf[256];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    ucs_log_fatal_error("Caught signal %d (%s: %s%s)", signo, strsignal(signo),
+                        cause, buf);
+}
+
+static void ucs_error_signal_handler(int signo, siginfo_t *info, void *context)
 {
     ucs_debug_cleanup();
     ucs_log_flush();
-    ucs_log_fatal_error("Caught signal %d (%s)", signo, strsignal(signo));
+
+    switch (signo) {
+    case SIGILL:
+        ucs_debug_log_signal(signo, ucs_signal_cause_ill(info->si_code), "");
+        break;
+    case SIGTRAP:
+        ucs_debug_log_signal(signo, ucs_signal_cause_trap(info->si_code), "");
+        break;
+    case SIGBUS:
+        ucs_debug_log_signal(signo, ucs_signal_cause_bus(info->si_code), "");
+        break;
+    case SIGFPE:
+        ucs_debug_log_signal(signo, ucs_signal_cause_fpe(info->si_code), "");
+        break;
+    case SIGSEGV:
+        ucs_debug_log_signal(signo, ucs_signal_cause_segv(info->si_code),
+                             " at address %p", info->si_addr);
+        break;
+    case SIGCHLD:
+        ucs_debug_log_signal(signo, ucs_signal_cause_cld(info->si_code), "");
+        break;
+    default:
+        ucs_debug_log_signal(signo, ucs_signal_cause_common(info->si_code), "");
+        break;
+    }
+
     if (signo != SIGINT && signo != SIGTERM) {
         ucs_handle_error();
     }
@@ -627,6 +820,7 @@ void ucs_handle_error()
         /* Fall thru */
 
     case UCS_HANDLE_ERROR_BACKTRACE:
+        ucs_debug_show_innermost_source_file(stderr);
         ucs_debug_print_backtrace(stderr, 2);
         break;
 
@@ -644,13 +838,35 @@ static void ucs_debug_signal_handler(int signo)
     ucs_global_opts.log_level = UCS_LOG_LEVEL_TRACE_DATA;
 }
 
-static void ucs_set_signal_handler(__sighandler_t handler)
+static void ucs_set_signal_handler(void (*handler)(int, siginfo_t*, void *))
 {
+    struct sigaction sigact, old_action;
     int i;
 
-    for (i = 0; i < ucs_global_opts.error_signals.count; ++i) {
-        signal(ucs_global_opts.error_signals.signals[i], handler);
+    if (handler == NULL) {
+        sigact.sa_handler   = SIG_DFL;
+        sigact.sa_flags     = 0;
+    } else {
+        sigact.sa_sigaction = handler;
+        sigact.sa_flags     = SA_SIGINFO;
     }
+    sigemptyset(&sigact.sa_mask);
+
+    for (i = 0; i < ucs_global_opts.error_signals.count; ++i) {
+        sigaction(ucs_global_opts.error_signals.signals[i], &sigact, &old_action);
+        ucs_debug_signal_restorer = old_action.sa_restorer;
+    }
+}
+
+static int ucs_debug_backtrace_is_excluded(void *address, const char *symbol)
+{
+    return !strcmp(symbol, "ucs_handle_error") ||
+           !strcmp(symbol, "ucs_error_freeze") ||
+           !strcmp(symbol, "ucs_error_signal_handler") ||
+           !strcmp(symbol, "ucs_debug_backtrace_create") ||
+           !strcmp(symbol, "ucs_debug_show_innermost_source_file") ||
+           !strcmp(symbol, "__ucs_abort") ||
+           (address == ucs_debug_signal_restorer);
 }
 
 ucs_status_t ucs_debug_lookup_address(void *address, ucs_debug_address_info_t *info)
@@ -724,7 +940,7 @@ void ucs_debug_init()
 void ucs_debug_cleanup()
 {
     if (ucs_global_opts.handle_errors > UCS_HANDLE_ERROR_NONE) {
-        ucs_set_signal_handler(SIG_DFL);
+        ucs_set_signal_handler(NULL);
     }
     if (ucs_global_opts.debug_signo > 0) {
         signal(ucs_global_opts.debug_signo, SIG_DFL);

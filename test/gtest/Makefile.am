@@ -5,8 +5,8 @@
 # See file LICENSE for terms.
 #
 
-UCS_HANDLE_ERRORS ?= freeze
-export UCS_HANDLE_ERRORS
+UCX_HANDLE_ERRORS ?= freeze
+export UCX_HANDLE_ERRORS
 
 GTEST_FILTER        ?= *
 GTEST_EXTRA_ARGS    =
@@ -30,6 +30,7 @@ gtestdir  = $(includedir)
 gtest_LDADD = \
 	$(top_builddir)/src/ucs/libucs.la \
 	$(top_builddir)/src/uct/libuct.la \
+	$(top_builddir)/src/ucm/libucm.la \
 	$(top_builddir)/src/ucp/libucp.la \
 	$(top_builddir)/src/ucs/libucstest.la \
 	$(top_builddir)/src/tools/perf/libucxperf.la \
@@ -43,21 +44,26 @@ gtest_CPPFLAGS = \
 	$(GTEST_CPPFLAGS)
 
 gtest_LDFLAGS  = $(GTEST_LDFLAGS) -no-install
-gtest_CXXFLAGS = $(GTEST_CXXFLAGS) -g -O3
+gtest_CXXFLAGS = $(GTEST_CXXFLAGS) -g -O3 -fno-tree-vectorize
 
 gtest_SOURCES = \
 	base/test_perf.cc \
+	\
+	ucm/malloc_hook.cc \
 	\
 	uct/test_amo.cc \
 	uct/test_amo_add.cc \
 	uct/test_amo_cswap.cc \
 	uct/test_amo_fadd.cc \
 	uct/test_amo_swap.cc \
+	uct/test_many2one_am.cc \
+	uct/test_mm.cc \
 	uct/test_mem.cc \
 	uct/test_p2p_am.cc \
 	uct/test_p2p_err.cc \
 	uct/test_p2p_rma.cc \
 	uct/test_pd.cc \
+	uct/test_pending.cc \
 	uct/test_uct_perf.cc \
 	uct/uct_p2p_test.cc \
 	uct/uct_test.cc \
@@ -68,6 +74,7 @@ gtest_SOURCES = \
 	ucp/test_ucp_perf.cc \
 	ucp/test_ucp_rma.cc \
 	ucp/test_ucp_tag.cc \
+	ucp/test_ucp_version.cc \
 	ucp/test_ucp_wireup.cc \
 	ucp/ucp_test.cc \
 	\
@@ -83,6 +90,7 @@ gtest_SOURCES = \
 	ucs/test_math.cc \
 	ucs/test_mpmc.cc \
 	ucs/test_mpool.cc \
+	ucs/test_pgtable.cc \
 	ucs/test_stats.cc \
 	ucs/test_sys.cc \
 	ucs/test_time.cc \
@@ -94,7 +102,10 @@ gtest_SOURCES += \
     uct/test_ib.cc
 if HAVE_TL_UD
 gtest_SOURCES += \
+	uct/ud_base.cc \
 	uct/test_ud.cc \
+	uct/test_ud_slow_timer.cc \
+	uct/test_ud_pending.cc \
 	uct/test_ud_ds.cc
 endif
 endif
@@ -105,6 +116,7 @@ noinst_HEADERS = \
 	uct/test_amo.h \
 	uct/uct_p2p_test.h \
 	uct/uct_test.h \
+	uct/ud_base.h \
 	\
 	ucp/test_ucp_memheap.h \
 	ucp/ucp_test.h
@@ -151,8 +163,8 @@ test: ucx gtest
 #
 test_gdb: ucx gtest
 	echo -e 'r\ninit-if-undefined $$_exitcode=-1\nif $$_exitcode>=0\n\tq\nend' > .gdbcommands
-	$(LAUNCHER) env UCS_HANDLE_ERRORS=none \
-		UCS_GDB_PATH="" \
+	$(LAUNCHER) env UCX_HANDLE_ERRORS=none \
+		UCX_GDB_PATH="" \
 		gdb -x .gdbcommands --args $(GDB_ARGS) \
 			$(abs_builddir)/gtest $(GTEST_ARGS)
 

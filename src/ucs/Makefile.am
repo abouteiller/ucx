@@ -22,7 +22,9 @@ nobase_dist_libucs_la_HEADERS = \
 	arch/x86_64/atomic.h \
 	arch/x86_64/bitops.h \
 	arch/x86_64/cpu.h \
-	arch/arch.h \
+	arch/atomic.h \
+	arch/bitops.h \
+	arch/cpu.h \
 	async/async_fwd.h \
 	async/async.h \
 	async/pipe.h \
@@ -39,6 +41,7 @@ nobase_dist_libucs_la_HEADERS = \
 	datastruct/mpool.h \
 	datastruct/mpool.inl \
 	datastruct/notifier.h \
+	datastruct/pgtable.h \
 	datastruct/ptr_array.h \
 	datastruct/queue_types.h \
 	datastruct/queue.h \
@@ -51,6 +54,7 @@ nobase_dist_libucs_la_HEADERS = \
 	debug/memtrack.h \
 	gtest/test.h \
 	gtest/test_helpers.h \
+	gtest/tap.h \
 	stats/libstats.h \
 	stats/stats.h \
 	sys/compiler.h \
@@ -84,6 +88,7 @@ libucs_la_SOURCES = \
 	datastruct/notifier.c \
 	datastruct/mpmc.c \
 	datastruct/mpool.c \
+	datastruct/pgtable.c \
 	datastruct/ptr_array.c \
 	debug/debug.c \
 	debug/instrument.c \

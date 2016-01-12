@@ -11,6 +11,7 @@
 extern "C" {
 #include <uct/api/uct.h>
 #include <ucs/sys/sys.h>
+#include <ucs/async/async.h>
 }
 #include <ucs/gtest/test.h>
 #include <vector>
@@ -46,7 +47,7 @@ protected:
     class entity {
     public:
         entity(const resource& resource, uct_iface_config_t *iface_config,
-               size_t rx_headroom);
+               size_t rx_headroom, uct_pd_config_t *pd_config);
 
         void mem_alloc(size_t length, uct_allocated_memory_t *mem,
                        uct_rkey_bundle *rkey_bundle) const;
@@ -74,6 +75,14 @@ protected:
         void flush() const;
 
     private:
+        class async_wrapper {
+        public:
+            ucs_async_context_t   m_async;
+            async_wrapper();
+            ~async_wrapper();
+        private:
+            async_wrapper(const async_wrapper &);
+        };
         typedef std::vector< ucs::handle<uct_ep_h> > eps_vec_t;
 
         entity(const entity&);
@@ -83,6 +92,7 @@ protected:
         void connect_to_ep(uct_ep_h from, uct_ep_h to);
 
         ucs::handle<uct_pd_h>      m_pd;
+        async_wrapper              m_async;
         ucs::handle<uct_worker_h>  m_worker;
         ucs::handle<uct_iface_h>   m_iface;
         eps_vec_t                  m_eps;
@@ -104,7 +114,9 @@ protected:
         void pattern_fill(uint64_t seed);
         void pattern_check(uint64_t seed);
 
-        static void pattern_check(void *buffer, size_t length, uint64_t seed);
+        static size_t pack(void *dest, void *arg);
+        static void pattern_check(const void *buffer, size_t length);
+        static void pattern_check(const void *buffer, size_t length, uint64_t seed);
     private:
         static uint64_t pat(uint64_t prev);
 
@@ -139,10 +151,12 @@ protected:
     void check_caps(uint64_t flags);
     const entity& ent(unsigned index) const;
     void progress() const;
+    void flush() const;
     uct_test::entity* create_entity(size_t rx_headroom);
 
     ucs::ptr_vector<entity> m_entities;
     uct_iface_config_t      *m_iface_config;
+    uct_pd_config_t         *m_pd_config;
 
 };
 
@@ -152,6 +166,7 @@ std::ostream& operator<<(std::ostream& os, const resource* resource);
 #define UCT_TEST_TLS \
     UCT_TEST_IB_TLS, \
     ugni_rdma, \
+    ugni_udt, \
     mm, \
     cma, \
     knem, \

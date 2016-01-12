@@ -6,6 +6,9 @@
 
 #include "mm_ep.h"
 
+#include <ucs/arch/atomic.h>
+
+
 SGLIB_DEFINE_LIST_FUNCTIONS(uct_mm_remote_seg_t, uct_mm_remote_seg_compare, next)
 SGLIB_DEFINE_HASHED_CONTAINER_FUNCTIONS(uct_mm_remote_seg_t,
                                         UCT_MM_BASE_ADDRESS_HASH_SIZE,
@@ -29,7 +32,8 @@ static UCS_CLASS_INIT_FUNC(uct_mm_ep_t, uct_iface_t *tl_iface,
                                                       size_to_attach,
                                                       (void *)remote_iface_addr->vaddr,
                                                       &self->mapped_desc.address,
-                                                      &self->mapped_desc.cookie);
+                                                      &self->mapped_desc.cookie,
+                                                      iface->path);
     if (status != UCS_OK) {
         ucs_error("failed to connect to remote peer with mm. remote mm_id: %zu",
                    remote_iface_addr->id);
@@ -40,9 +44,13 @@ static UCS_CLASS_INIT_FUNC(uct_mm_ep_t, uct_iface_t *tl_iface,
     self->mapped_desc.mmid   = remote_iface_addr->id;
     uct_mm_set_fifo_ptrs(self->mapped_desc.address, &self->fifo_ctl, &self->fifo);
 
+    self->cached_tail = self->fifo_ctl->tail;
+
     /* Initiate the hash which will keep the base_adresses of remote memory
      * chunks that hold the descriptors for bcopy. */
     sglib_hashed_uct_mm_remote_seg_t_init(self->remote_segments_hash);
+
+    ucs_arbiter_group_init(&self->arb_group);
 
     ucs_debug("mm: ep connected: %p, to remote_shmid: %zu", self, remote_iface_addr->id);
 
@@ -73,6 +81,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_mm_ep_t)
     if (status != UCS_OK) {
         ucs_error("error detaching from remote FIFO");
     }
+
+    ucs_arbiter_group_cleanup(&self->arb_group);
 }
 
 UCS_CLASS_DEFINE(uct_mm_ep_t, uct_base_ep_t)
@@ -99,17 +109,14 @@ ucs_status_t uct_mm_ep_put_short(uct_ep_h tl_ep, const void *buffer,
     return UCS_OK;
 }
 
-ucs_status_t uct_mm_ep_put_bcopy(uct_ep_h tl_ep, uct_pack_callback_t pack_cb,
-                                 void *arg, size_t length, 
-                                 uint64_t remote_addr, uct_rkey_t rkey)
+ssize_t uct_mm_ep_put_bcopy(uct_ep_h tl_ep, uct_pack_callback_t pack_cb,
+                            void *arg, uint64_t remote_addr, uct_rkey_t rkey)
 {
-    if (ucs_likely(length != 0)) {
-        pack_cb((void *)(rkey + remote_addr), arg, length);
-        uct_mm_trace_data(remote_addr, rkey, "PUT_BCOPY [size %zu]", length);
-    } else {
-        ucs_trace_data("PUT_BCOPY [zero-length]");
-    }
-    return UCS_OK;
+    size_t length;
+
+    length = pack_cb((void *)(rkey + remote_addr), arg);
+    uct_mm_trace_data(remote_addr, rkey, "PUT_BCOPY [size %zu]", length);
+    return length;
 }
 
 void *uct_mm_ep_attach_remote_seg(uct_mm_ep_t *ep, uct_mm_iface_t *iface, uct_mm_fifo_element_t *elem)
@@ -135,7 +142,8 @@ void *uct_mm_ep_attach_remote_seg(uct_mm_ep_t *ep, uct_mm_iface_t *iface, uct_mm
                                                                elem->desc_mpool_size,
                                                                elem->desc_chunk_base_addr,
                                                                &remote_seg->address,
-                                                               &remote_seg->cookie);
+                                                               &remote_seg->cookie,
+                                                               iface->path);
         if (status != UCS_OK) {
             ucs_fatal("Failed to attach to remote mmid:%zu. %s ",
                       elem->desc_mmid, ucs_status_string(status));
@@ -174,30 +182,41 @@ static inline ucs_status_t uct_mm_ep_get_remote_elem(uct_mm_ep_t *ep, uint64_t h
 
 /* A common mm active message sending function.
  * The first parameter indicates the origin of the call.
- * 1 - perform am short sending
- * 0 - perform am bcopy sending
+ * is_short = 1 - perform AM short sending
+ * is_short = 0 - perform AM bcopy sending
  */
-static UCS_F_ALWAYS_INLINE ucs_status_t
+static UCS_F_ALWAYS_INLINE ssize_t
 uct_mm_ep_am_common_send(const unsigned is_short, uct_mm_ep_t *ep, uct_mm_iface_t *iface,
-                         uint8_t am_id, unsigned length, uint64_t header,
+                         uint8_t am_id, size_t length, uint64_t header,
                          const void *payload, uct_pack_callback_t pack_cb, void *arg)
 {
     uct_mm_fifo_element_t *elem;
     ucs_status_t status;
-    uint64_t head;
     void *base_address;
+    uint64_t head;
 
     UCT_CHECK_AM_ID(am_id);
 
     head = ep->fifo_ctl->head;
-    /* check if there is room in the remote process's receive fifo to write */
-    if (ucs_unlikely((head - ep->fifo_ctl->tail) >= iface->config.fifo_size)) {
-        return UCS_ERR_NO_RESOURCE;
+    /* check if there is room in the remote process's receive FIFO to write */
+    if (!UCT_MM_EP_IS_ABLE_TO_SEND(head, ep->cached_tail, iface->config.fifo_size)) {
+        if (!ucs_arbiter_group_is_empty(&ep->arb_group)) {
+            /* pending isn't empty. don't send now to prevent out-of-order sending */
+            return UCS_ERR_NO_RESOURCE;
+        } else {
+            /* pending is empty */
+            /* update the local copy of the tail to its actual value on the remote peer */
+            ucs_memory_cpu_load_fence();
+            ep->cached_tail = ep->fifo_ctl->tail;
+            if (!UCT_MM_EP_IS_ABLE_TO_SEND(head, ep->cached_tail, iface->config.fifo_size)) {
+                return UCS_ERR_NO_RESOURCE;
+            }
+        }
     }
 
     status = uct_mm_ep_get_remote_elem(ep, head, &elem);
-
     if (status != UCS_OK) {
+        ucs_trace_poll("couldn't get an available FIFO element");
         return status;
     }
 
@@ -209,17 +228,23 @@ uct_mm_ep_am_common_send(const unsigned is_short, uct_mm_ep_t *ep, uct_mm_iface_
 
         elem->flags |= UCT_MM_FIFO_ELEM_FLAG_INLINE;
         elem->length = length + sizeof(header);
+
+        uct_iface_trace_am(&iface->super, UCT_AM_TRACE_TYPE_SEND, am_id,
+                           elem + 1, length + sizeof(header), "TX: AM_SHORT");
     } else {
         /* AM_BCOPY */
         /* write to the remote descriptor */
         /* get the base_address: local ptr to remote memory chunk after attaching to it */
         base_address = uct_mm_ep_attach_remote_seg(ep, iface, elem);
-        pack_cb(base_address + elem->desc_offset, arg, length);
+        length = pack_cb(base_address + elem->desc_offset, arg);
 
         elem->flags &= ~UCT_MM_FIFO_ELEM_FLAG_INLINE;
         elem->length = length;
 
+        uct_iface_trace_am(&iface->super, UCT_AM_TRACE_TYPE_SEND, am_id,
+                           base_address + elem->desc_offset, length, "TX: AM_BCOPY");
     }
+
     elem->am_id = am_id;
 
     /* memory barrier - make sure that the memory is flushed before setting the
@@ -234,7 +259,11 @@ uct_mm_ep_am_common_send(const unsigned is_short, uct_mm_ep_t *ep, uct_mm_iface_
         elem->flags &= ~UCT_MM_FIFO_ELEM_FLAG_OWNER;
     }
 
-    return UCS_OK;
+    if (is_short) {
+        return UCS_OK;
+    } else {
+        return length;
+    }
 }
 
 ucs_status_t uct_mm_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
@@ -242,44 +271,91 @@ ucs_status_t uct_mm_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
 {
     uct_mm_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_mm_iface_t);
     uct_mm_ep_t *ep = ucs_derived_of(tl_ep, uct_mm_ep_t);
-    ucs_status_t status;
 
     UCT_CHECK_LENGTH(length + sizeof(header),
                      iface->config.fifo_elem_size - sizeof(uct_mm_fifo_element_t),
                      "am_short");
 
-    status = uct_mm_ep_am_common_send(UCT_MM_AM_SHORT, ep, iface, id, length,
-                                      header, payload, NULL, NULL);
-    if (status == UCS_OK) {
-        ucs_trace_data("MM: AM_SHORT [%p] am_id: %d buf=%p length=%u",
-                        iface, id, payload, length);
-    } else {
-        ucs_trace_poll("Couldn't get an available FIFO element in am_short");
-    }
-
-    return status;
+    return uct_mm_ep_am_common_send(UCT_MM_AM_SHORT, ep, iface, id, length,
+                                    header, payload, NULL, NULL);
 }
 
-ucs_status_t uct_mm_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
-                                uct_pack_callback_t pack_cb, void *arg,
-                                size_t length)
+ssize_t uct_mm_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id, uct_pack_callback_t pack_cb,
+                           void *arg)
 {
     uct_mm_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_mm_iface_t);
     uct_mm_ep_t *ep = ucs_derived_of(tl_ep, uct_mm_ep_t);
-    ucs_status_t status;
 
-    UCT_CHECK_LENGTH(length, iface->config.seg_size, "am_bcopy");
+    return uct_mm_ep_am_common_send(UCT_MM_AM_BCOPY, ep, iface, id, 0, 0, NULL,
+                                    pack_cb, arg);
+}
 
-    status = uct_mm_ep_am_common_send(UCT_MM_AM_BCOPY, ep, iface, id, length,
-                                      0, NULL, pack_cb, arg);
-    if (status == UCS_OK) {
-        ucs_trace_data("MM: AM_BCOPY [%p] am_id: %d buf=%p length=%u",
-                        iface, id, arg, (int)length);
-    } else {
-        ucs_trace_poll("Couldn't get an available FIFO element in am_bcopy");
+ucs_status_t uct_mm_ep_pending_add(uct_ep_h tl_ep, uct_pending_req_t *n)
+{
+    uct_mm_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_mm_iface_t);
+    uct_mm_ep_t *ep = ucs_derived_of(tl_ep, uct_mm_ep_t);
+
+    /* check if resources became available */
+    if (UCT_MM_EP_IS_ABLE_TO_SEND(ep->fifo_ctl->head, ep->cached_tail, iface->config.fifo_size)) {
+        return UCS_ERR_BUSY;
     }
 
-    return status;
+    UCS_STATIC_ASSERT(sizeof(ucs_arbiter_elem_t) <= UCT_PENDING_REQ_PRIV_LEN);
+
+    ucs_arbiter_elem_init((ucs_arbiter_elem_t *)n->priv);
+    /* add the request to the ep's arbiter_group (pending queue) */
+    ucs_arbiter_group_push_elem(&ep->arb_group, (ucs_arbiter_elem_t*) n->priv);
+    /* add the ep's group to the arbiter */
+    ucs_arbiter_group_schedule(&iface->arbiter, &ep->arb_group);
+
+    return UCS_OK;
+}
+
+ucs_arbiter_cb_result_t uct_mm_ep_process_pending(ucs_arbiter_t *arbiter,
+                                                  ucs_arbiter_elem_t *elem,
+                                                  void *arg)
+{
+    uct_pending_req_t *req = ucs_container_of(elem, uct_pending_req_t, priv);
+    ucs_status_t status;
+    uct_mm_ep_t *ep = ucs_container_of(ucs_arbiter_elem_group(elem), uct_mm_ep_t, arb_group);
+
+    /* update the local tail with its actual value from the remote peer
+     * making sure that the pending sends would use the real tail value */
+    ucs_memory_cpu_load_fence();
+    ep->cached_tail = ep->fifo_ctl->tail;
+
+    status = req->func(req);
+    ucs_trace_data("progress pending request %p returned %s", req,
+                   ucs_status_string(status));
+
+    if (status == UCS_OK) {
+        /* sent successfully. remove from the arbiter */
+        return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
+    } else {
+        /* couldn't send. keep this request in the arbiter until the next time
+         * this function is called */
+        return UCS_ARBITER_CB_RESULT_RESCHED_GROUP;
+    }
+}
+
+static ucs_arbiter_cb_result_t uct_mm_ep_abriter_purge_cb(ucs_arbiter_t *arbiter,
+                                                          ucs_arbiter_elem_t *elem,
+                                                          void *arg)
+{
+    uct_pending_req_t *req = ucs_container_of(elem, uct_pending_req_t, priv);
+    uct_pending_callback_t cb = arg;
+
+    cb(req);
+    return UCS_ARBITER_CB_RESULT_REMOVE_ELEM;
+}
+
+void uct_mm_ep_pending_purge(uct_ep_h tl_ep, uct_pending_callback_t cb)
+{
+    uct_mm_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_mm_iface_t);
+    uct_mm_ep_t *ep = ucs_derived_of(tl_ep, uct_mm_ep_t);
+
+    ucs_arbiter_group_purge(&iface->arbiter, &ep->arb_group,
+                            uct_mm_ep_abriter_purge_cb, cb);
 }
 
 ucs_status_t uct_mm_ep_atomic_add64(uct_ep_h tl_ep, uint64_t add,

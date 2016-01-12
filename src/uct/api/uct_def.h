@@ -16,7 +16,7 @@
 #define UCT_PD_COMPONENT_NAME_MAX  8
 #define UCT_PD_NAME_MAX          16
 #define UCT_DEVICE_NAME_MAX      32
-#define UCT_PENDING_REQ_PRIV_LEN 16
+#define UCT_PENDING_REQ_PRIV_LEN 32
 #define UCT_AM_ID_BITS           5
 #define UCT_AM_ID_MAX            UCS_BIT(UCT_AM_ID_BITS)
 #define UCT_INVALID_MEM_HANDLE   NULL
@@ -24,8 +24,21 @@
 #define UCT_INLINE_API           static UCS_F_ALWAYS_INLINE
 
 
+/**
+ * @ingroup AM
+ * @brief Trace types for active message tracer.
+ */
+enum uct_am_trace_type {
+    UCT_AM_TRACE_TYPE_SEND,
+    UCT_AM_TRACE_TYPE_RECV,
+    UCT_AM_TRACE_TYPE_SEND_DROP,
+    UCT_AM_TRACE_TYPE_RECV_DROP,
+    UCT_AM_TRACE_TYPE_LAST
+};
+
 typedef struct uct_iface         *uct_iface_h;
 typedef struct uct_iface_config  uct_iface_config_t;
+typedef struct uct_pd_config     uct_pd_config_t;
 typedef struct uct_ep            *uct_ep_h;
 typedef void *                   uct_mem_h;
 typedef uintptr_t                uct_rkey_t;
@@ -35,9 +48,10 @@ typedef void                     *uct_rkey_ctx_h;
 typedef struct uct_iface_attr    uct_iface_attr_t;
 typedef struct uct_pd_attr       uct_pd_attr_t;
 typedef struct uct_completion    uct_completion_t;
-typedef struct uct_pending_req  uct_pending_req_t;
+typedef struct uct_pending_req   uct_pending_req_t;
 typedef struct uct_worker        *uct_worker_h;
 typedef struct uct_pd            uct_pd_t;
+typedef enum uct_am_trace_type   uct_am_trace_type_t;
 
 
 /**
@@ -62,6 +76,23 @@ typedef ucs_status_t (*uct_am_callback_t)(void *arg, void *data, size_t length,
 
 
 /**
+ * Callback to trace active messages. Writes a string which represents active
+ * message contents into 'buffer'.
+ *
+ * @param [in]  arg      User-defined argument.
+ * @param [in]  type     Message type.
+ * @param [in]  id       Active message id.
+ * @param [in]  data     Points to the received data.
+ * @param [in]  length   Length of data.
+ * @param [out] buffer   Filled with a debug information string.
+ * @param [in]  max      Maximal length of the string.
+ */
+typedef void (*uct_am_tracer_t)(void *arg, uct_am_trace_type_t type, uint8_t id,
+                                const void *data, size_t length, char *buffer,
+                                size_t max);
+
+
+/**
  * Callback to process send completion.
  *
  * @param [in]  self     Pointer to relevant completion structure, which was
@@ -76,11 +107,9 @@ typedef void (*uct_completion_callback_t)(uct_completion_t *self);
  * @param [in]  self     Pointer to relevant pending structure, which was
  *                       initially passed to the operation.
  *
- * @return UCS_OK              - This pending request should be removed.
- *         UCS_INPROGRESS      - Keep this pending request on the queue, and
- *                               continue to next requests.
- *         < 0 (UCS_ERR_xx)    - Keep this pending request on the queue, and
- *                               stop processing the queue.
+ * @return UCS_OK     - This pending request should be removed.
+ *         Otherwise  - Keep this pending request on the queue, and stop
+ *                       processing the queue.
  */
 typedef ucs_status_t (*uct_pending_callback_t)(uct_pending_req_t *self);
 
@@ -90,11 +119,10 @@ typedef ucs_status_t (*uct_pending_callback_t)(uct_pending_req_t *self);
  *
  * @param [in]  dest     Memory buffer to pack the data to.
  * @param [in]  arg      Custom user-argument.
- * @param [in]  length   How much data to produce (size of "dest")
  *
- * @note The arguments for this callback are in the same order as libc's memcpy().
+ * @return  How much data was actually produced.
  */
-typedef void (*uct_pack_callback_t)(void *dest, void *arg, size_t length);
+typedef size_t (*uct_pack_callback_t)(void *dest, void *arg);
 
 
 /**

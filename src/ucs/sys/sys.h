@@ -1,5 +1,6 @@
 /**
 * Copyright (C) Mellanox Technologies Ltd. 2001-2014.  ALL RIGHTS RESERVED.
+* Copyright (c) UT-Battelle, LLC. 2014-2015. ALL RIGHTS RESERVED.
 *
 * See file LICENSE for terms.
 */
@@ -12,7 +13,6 @@
 #endif
 
 #include <ucs/sys/compiler.h>
-#include <ucs/arch/arch.h>
 #include <ucs/type/status.h>
 #include <ucs/debug/memtrack.h>
 
@@ -62,6 +62,8 @@
 #  define VALGRIND_DESTROY_MEMPOOL(p)
 #  define VALGRIND_MEMPOOL_ALLOC(n,p,x)
 #  define VALGRIND_MEMPOOL_FREE(n,p)
+#  define VALGRIND_MALLOCLIKE_BLOCK(p,s,r,z)
+#  define VALGRIND_FREELIKE_BLOCK(p,r)
 #  define VALGRIND_COUNT_ERRORS              0
 #  define VALGRIND_COUNT_LEAKS(a,b,c,d)      { a = b = c = d = 0; }
 #  define RUNNING_ON_VALGRIND                0
@@ -92,6 +94,10 @@
  */
 const char *ucs_get_host_name();
 
+/**
+ * @return user name.
+ */
+const char *ucs_get_user_name();
 
 /**
  * Expand a partial path to full path.
@@ -287,5 +293,6 @@ double ucs_get_cpuinfo_clock_freq(const char *mhz_header);
  */
 void ucs_empty_function();
 ucs_status_t ucs_empty_function_return_success();
+ucs_status_t uct_empty_function_return_unsupported();
 
 #endif

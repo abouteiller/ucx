@@ -19,6 +19,7 @@ static ucs_status_t uct_cuda_pd_query(uct_pd_h pd, uct_pd_attr_t *pd_attr)
     pd_attr->cap.flags         = UCT_PD_FLAG_REG;
     pd_attr->cap.max_alloc     = 0;
     pd_attr->cap.max_reg       = ULONG_MAX;
+    pd_attr->rkey_packed_size  = 0;
     memset(&pd_attr->local_cpus, 0xff, sizeof(pd_attr->local_cpus));
     return UCS_OK;
 }
@@ -73,7 +74,8 @@ static ucs_status_t uct_cuda_query_pd_resources(uct_pd_resource_desc_t **resourc
     return uct_single_pd_resource(&uct_cuda_pd, resources_p, num_resources_p);
 }
 
-static ucs_status_t uct_cuda_pd_open(const char *pd_name, uct_pd_h *pd_p)
+static ucs_status_t uct_cuda_pd_open(const char *pd_name, const uct_pd_config_t *pd_config,
+                                     uct_pd_h *pd_p)
 {
     static uct_pd_ops_t pd_ops = {
         .close        = (void*)ucs_empty_function,
@@ -93,5 +95,6 @@ static ucs_status_t uct_cuda_pd_open(const char *pd_name, uct_pd_h *pd_p)
 
 UCT_PD_COMPONENT_DEFINE(uct_cuda_pd, UCT_CUDA_PD_NAME,
                         uct_cuda_query_pd_resources, uct_cuda_pd_open, NULL,
-                        0, uct_cuda_rkey_unpack, uct_cuda_rkey_release);
+                        uct_cuda_rkey_unpack, uct_cuda_rkey_release, "CUDA_",
+                        uct_pd_config_table, uct_pd_config_t);
 

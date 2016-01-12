@@ -9,6 +9,7 @@
 # the right time.
 
 ACLOCAL_AMFLAGS = -I config/m4
+DISTCHECK_CONFIGURE_FLAGS = "--disable-jemalloc"
 
 noinst_HEADERS = src/uct/api/uct.h src/uct/api/uct_def.h src/uct/api/tl.h
 doxygen_doc_files = $(noinst_HEADERS)
@@ -21,15 +22,20 @@ dist_doc__DATA = README
 
 SUBDIRS = \
 	src/ucs \
+	src/ucm \
 	src/uct \
 	src/ucp \
-	src/tools/hook \
 	src/tools/info \
 	src/tools/perf \
-	test/examples
+	test/examples \
+	external
 
 if HAVE_GTEST
 SUBDIRS += test/gtest
+endif
+
+if HAVE_MPI
+SUBDIRS += test/mpi
 endif
 
 EXTRA_DIST =
@@ -56,9 +62,14 @@ DOCLIST = doc/doxygen/doxygen-doc/ucx.tag
 FORMAT = pdf
 DOT_CLEANFILES =
 
+if HAVE_GTEST
+gtest:
+	@make -C test/gtest test
+endif
+
 if HAVE_DOT
-DOCLIST += doc/uml/uct.$(FORMAT)
-DOT_CLEANFILES += doc/uml/uct.$(FORMAT)
+DOCLIST += doc/uml/uml.tag doc/uml/uct.$(FORMAT) doc/uml/ucp.$(FORMAT)
+DOT_CLEANFILES += doc/uml/uml.tag doc/uml/uct.$(FORMAT) doc/uml/ucp.$(FORMAT)
 endif
 
 docs: $(DOCLIST)
@@ -69,8 +80,11 @@ docs-clean:
 
 doc/doxygen/doxygen-doc/ucx.tag: $(doxygen_doc_files) doxygen-doc
 
-doc/uml/uct.$(FORMAT):
-	mkdir -p $(abs_top_builddir)/doc/uml
-	dot -T $(FORMAT) -o $(abs_top_builddir)/doc/uml/uct.pdf $(abs_top_srcdir)/doc/uml/uct.dot
+doc/uml/uml.tag:
+	mkdir -p doc/uml
+	echo `date` > $@
+
+.dot.pdf:
+	dot -T pdf -o $@ $<
 
 MOSTLYCLEANFILES = $(DX_CLEANFILES) $(DOT_CLEANFILES)

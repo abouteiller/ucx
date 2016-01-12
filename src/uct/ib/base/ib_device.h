@@ -10,7 +10,7 @@
 #include "ib_verbs.h"
 
 #include <uct/api/uct.h>
-#include <uct/tl/context.h>
+#include <uct/base/uct_pd.h>
 #include <ucs/stats/stats.h>
 #include <ucs/type/status.h>
 
@@ -64,6 +64,11 @@ struct uct_ib_device {
 
 
 extern uct_pd_component_t uct_ib_pd;
+
+
+typedef struct uct_ib_pd_config {
+    uct_pd_config_t      super;
+} uct_ib_pd_config_t;
 
 
 /*

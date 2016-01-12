@@ -7,13 +7,14 @@
 #include "rc_iface.h"
 #include "rc_ep.h"
 
+#include <ucs/arch/cpu.h>
 #include <ucs/debug/memtrack.h>
 #include <ucs/debug/log.h>
 #include <ucs/type/class.h>
 
 
 ucs_config_field_t uct_rc_iface_config_table[] = {
-  {"IB_", "RX_INLINE=64", NULL,
+  {"IB_", "RX_INLINE=64;RX_QUEUE_LEN=4095", NULL,
    ucs_offsetof(uct_rc_iface_config_t, super), UCS_CONFIG_TYPE_TABLE(uct_ib_iface_config_table)},
 
   {"PATH_MTU", "default",
@@ -32,7 +33,7 @@ ucs_config_field_t uct_rc_iface_config_table[] = {
    "Transport retries",
    ucs_offsetof(uct_rc_iface_config_t, tx.retry_count), UCS_CONFIG_TYPE_UINT},
 
-  {"RNR_TIMEOUT", "1.0s",
+  {"RNR_TIMEOUT", "30ms",
    "RNR timeout",
    ucs_offsetof(uct_rc_iface_config_t,tx. rnr_timeout), UCS_CONFIG_TYPE_TIME},
 
@@ -73,6 +74,7 @@ void uct_rc_iface_query(uct_rc_iface_t *iface, uct_iface_attr_t *iface_attr)
                                       UCT_IFACE_FLAG_PUT_ZCOPY |
                                       UCT_IFACE_FLAG_GET_BCOPY |
                                       UCT_IFACE_FLAG_GET_ZCOPY |
+                                      UCT_IFACE_FLAG_PENDING   |
                                       UCT_IFACE_FLAG_CONNECT_TO_EP |
                                       UCT_IFACE_FLAG_AM_THREAD_SINGLE;
 }
@@ -171,7 +173,7 @@ UCS_CLASS_INIT_FUNC(uct_rc_iface_t, uct_iface_ops_t *ops, uct_pd_h pd,
 
     self->tx.cq_available           = config->tx.cq_len - 1; /* Reserve one for error */
     self->tx.next_op                = 0;
-    self->rx.available              = config->super.rx.queue_len;
+    self->rx.available              = 0;
     self->config.tx_qp_len          = config->super.tx.queue_len;
     self->config.tx_min_sge         = config->super.tx.min_sge;
     self->config.tx_min_inline      = config->super.tx.min_inline;
@@ -190,11 +192,12 @@ UCS_CLASS_INIT_FUNC(uct_rc_iface_t, uct_iface_ops_t *ops, uct_pd_h pd,
 
     uct_rc_iface_set_path_mtu(self, config);
     memset(self->eps, 0, sizeof(self->eps));
+    ucs_arbiter_init(&self->tx.arbiter);
     ucs_list_head_init(&self->ep_list);
 
     /* Create RX buffers mempool */
     status = uct_ib_iface_recv_mpool_init(&self->super, &config->super,
-                                            "rc_recv_desc", &self->rx.mp);
+                                          "rc_recv_desc", &self->rx.mp);
     if (status != UCS_OK) {
         goto err;
     }
@@ -233,6 +236,8 @@ UCS_CLASS_INIT_FUNC(uct_rc_iface_t, uct_iface_ops_t *ops, uct_pd_h pd,
         goto err_free_tx_ops;
     }
 
+    self->rx.available           = srq_init_attr.attr.max_wr;
+
     status = UCS_STATS_NODE_ALLOC(&self->stats, &uct_rc_iface_stats_class,
                                   self->super.super.stats);
     if (status != UCS_OK) {
@@ -266,6 +271,8 @@ static UCS_CLASS_CLEANUP_FUNC(uct_rc_iface_t)
     if (!ucs_list_is_empty(&self->ep_list)) {
         ucs_warn("some eps were not destroyed");
     }
+
+    ucs_arbiter_cleanup(&self->tx.arbiter);
 
     UCS_STATS_NODE_FREE(self->stats);
 

@@ -9,6 +9,7 @@
 
 #include <uct/ib/base/ib_verbs.h>
 #include <uct/ib/base/ib_device.h>
+#include <ucs/arch/bitops.h>
 #include <ucs/debug/log.h>
 #include <ucs/sys/compiler.h>
 #include <ucs/sys/sys.h>
@@ -39,7 +40,7 @@ ucs_status_t uct_ib_mlx5_get_qp_info(struct ibv_qp *qp, uct_ib_mlx5_qp_info_t *q
 #else
     struct mlx5_qp *mqp = ucs_container_of(qp, struct mlx5_qp, verbs_qp.qp);
 
-    if ((mqp->sq.cur_post != 0) || (mqp->rq.head != 0) || mqp->bf->need_lock) {
+    if ((mqp->sq.cur_post != 0) || (mqp->rq.head != 0)) {
         ucs_warn("cur_post=%d head=%d need_lock=%d", mqp->sq.cur_post,
                  mqp->rq.head, mqp->bf->need_lock);
         return UCS_ERR_NO_DEVICE;
@@ -189,8 +190,22 @@ struct mlx5_cqe64* uct_ib_mlx5_check_completion(uct_ib_mlx5_cq_t *cq,
     }
 }
 
+static int uct_ib_mlx5_bf_cmp(uct_ib_mlx5_bf_t *bf, uintptr_t addr)
+{
+    return ((bf->reg.addr & ~UCT_IB_MLX5_BF_REG_SIZE) == (addr & ~UCT_IB_MLX5_BF_REG_SIZE));
+}
 
-ucs_status_t uct_ib_mlx5_get_txwq(struct ibv_qp *qp, uct_ib_mlx5_txwq_t *wq)
+static void uct_ib_mlx5_bf_init(uct_ib_mlx5_bf_t *bf, uintptr_t addr)
+{
+    bf->reg.addr = addr;
+}
+
+static void uct_ib_mlx5_bf_cleanup(uct_ib_mlx5_bf_t *bf)
+{
+}
+
+ucs_status_t uct_ib_mlx5_get_txwq(uct_worker_h worker, struct ibv_qp *qp,
+                                  uct_ib_mlx5_txwq_t *wq)
 {
     uct_ib_mlx5_qp_info_t qp_info;
     ucs_status_t status;
@@ -203,7 +218,9 @@ ucs_status_t uct_ib_mlx5_get_txwq(struct ibv_qp *qp, uct_ib_mlx5_txwq_t *wq)
 
     if ((qp_info.bf.size == 0) || !ucs_is_pow2(qp_info.bf.size) ||
         (qp_info.sq.stride != MLX5_SEND_WQE_BB) ||
-        !ucs_is_pow2(qp_info.sq.wqe_cnt)) {
+        (qp_info.bf.size != UCT_IB_MLX5_BF_REG_SIZE) ||
+        !ucs_is_pow2(qp_info.sq.wqe_cnt))
+    {
         ucs_error("mlx5 device parameters not suitable for transport");
         return UCS_ERR_IO_ERROR;
     }
@@ -221,8 +238,12 @@ ucs_status_t uct_ib_mlx5_get_txwq(struct ibv_qp *qp, uct_ib_mlx5_txwq_t *wq)
     wq->qend       = qp_info.sq.buf + (qp_info.sq.stride * qp_info.sq.wqe_cnt);
     wq->curr       = wq->qstart;
     wq->sw_pi      = wq->prev_sw_pi = 0;
-    wq->bf_reg     = qp_info.bf.reg;
-    wq->bf_size    = qp_info.bf.size;
+    wq->bf         = uct_worker_tl_data_get(worker,
+                                            UCT_IB_MLX5_WORKER_BF_KEY,
+                                            uct_ib_mlx5_bf_t,
+                                            uct_ib_mlx5_bf_cmp,
+                                            uct_ib_mlx5_bf_init,
+                                            (uintptr_t)qp_info.bf.reg);
     wq->dbrec      = &qp_info.dbrec[MLX5_SND_DBR];
     /* need to reserve 2x because:
      *  - on completion we only get the index of last wqe and we do not 
@@ -238,6 +259,11 @@ ucs_status_t uct_ib_mlx5_get_txwq(struct ibv_qp *qp, uct_ib_mlx5_txwq_t *wq)
     memset(wq->qstart, 0, wq->qend - wq->qstart); 
     return UCS_OK;
 } 
+
+void uct_ib_mlx5_put_txwq(uct_worker_h worker, uct_ib_mlx5_txwq_t *wq)
+{
+    uct_worker_tl_data_put(wq->bf, uct_ib_mlx5_bf_cleanup);
+}
 
 ucs_status_t uct_ib_mlx5_get_rxwq(struct ibv_qp *qp, uct_ib_mlx5_rxwq_t *wq)
 {

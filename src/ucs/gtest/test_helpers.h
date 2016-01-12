@@ -1,5 +1,6 @@
 /**
 * Copyright (C) Mellanox Technologies Ltd. 2001-2012.  ALL RIGHTS RESERVED.
+* Copyright (c) UT-Battelle, LLC. 2015. ALL RIGHTS RESERVED.
 *
 * See file LICENSE for terms.
 */
@@ -124,15 +125,15 @@ std::string to_string(const T& value) {
 }
 
 template <typename T>
-class ptr_vector {
+class ptr_vector_base {
 public:
     typedef std::vector<T*> vec_type;
     typedef typename vec_type::const_iterator const_iterator;
 
-    ptr_vector() {
+    ptr_vector_base() {
     }
 
-    ~ptr_vector() {
+    virtual ~ptr_vector_base() {
         clear();
     }
 
@@ -141,15 +142,11 @@ public:
         m_vec.push_back(ptr);
     }
 
-    T& at(size_t index) const {
-        return *m_vec.at(index);
-    }
-
-    void clear() {
+    virtual void clear() {
         while (!m_vec.empty()) {
             T* ptr = m_vec.back();
             m_vec.pop_back();
-            delete ptr;
+            release(ptr);
         }
     }
 
@@ -160,9 +157,32 @@ public:
     const_iterator end() const {
         return m_vec.end();
     }
-private:
-    ptr_vector(const ptr_vector&);
+
+protected:
+    ptr_vector_base(const ptr_vector_base&);
     vec_type m_vec;
+
+private:
+    void release(T *ptr) {
+        delete ptr;
+    }
+};
+
+template<> inline void ptr_vector_base<void>::release(void *ptr) {
+    free(ptr);
+}
+
+
+template <typename T>
+class ptr_vector : public ptr_vector_base<T> {
+public:
+    T& at(size_t index) const {
+        return *ptr_vector_base<T>::m_vec.at(index);
+    }
+};
+
+template <>
+class ptr_vector<void> : public ptr_vector_base<void> {
 };
 
 
@@ -342,9 +362,16 @@ public:
 
 /* UCS error check */
 #define EXPECT_UCS_OK(_error)  EXPECT_EQ(UCS_OK, _error) << "Error: " << ucs_status_string(_error)
-#define ASSERT_UCS_OK(_error) \
+#define ASSERT_UCS_OK(_error, ...) \
     do { \
         if ((_error) != UCS_OK) { \
+            UCS_TEST_ABORT("Error: " << ucs_status_string(_error)  __VA_ARGS__); \
+        } \
+    } while (0)
+
+#define ASSERT_UCS_OK_OR_INPROGRESS(_error) \
+    do { \
+        if ((_error) != UCS_OK && (_error) != UCS_INPROGRESS) { \
             UCS_TEST_ABORT("Error: " << ucs_status_string(_error)); \
         } \
     } while (0)

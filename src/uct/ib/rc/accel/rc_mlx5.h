@@ -24,13 +24,6 @@ enum {
 };
 
 
-typedef struct uct_rc_mlx5_recv_desc uct_rc_mlx5_recv_desc_t;
-struct uct_rc_mlx5_recv_desc {
-    uct_ib_iface_recv_desc_t   super;
-    ucs_queue_elem_t           queue;
-} UCS_S_PACKED;
-
-
 /**
  * RC mlx5 interface configuration
  */
@@ -38,6 +31,30 @@ typedef struct uct_rc_mlx5_iface_config {
     uct_rc_iface_config_t  super;
     /* TODO wc_mode, UAR mode SnB W/A... */
 } uct_rc_mlx5_iface_config_t;
+
+
+/**
+ * SRQ segment
+ *
+ * We add some SW book-keeping information in the unused HW fields:
+ *  - next_hole - points to the next out-of-order completed segment
+ *  - desc      - the receive descriptor.
+ *
+ */
+typedef struct uct_rc_mlx5_srq_seg {
+    union {
+        struct mlx5_wqe_srq_next_seg   mlx5_srq;
+        struct {
+            uint8_t                    rsvd0[2];
+            uint16_t                   next_wqe_index; /* Network byte order */
+            uint8_t                    signature;
+            uint8_t                    rsvd1[2];
+            uint8_t                    ooo;
+            uct_ib_iface_recv_desc_t   *desc;          /* Host byte order */
+        } srq;
+    };
+    struct mlx5_wqe_data_seg           dptr;
+} uct_rc_mlx5_srq_seg_t;
 
 
 /**
@@ -66,12 +83,12 @@ typedef struct {
 
     struct {
         uct_ib_mlx5_cq_t   cq;
-        ucs_queue_head_t   desc_q;
         void               *buf;
-        uint32_t           *db;
-        uint16_t           head;
-        uint16_t           tail;
-        uint16_t           sw_pi;
+        volatile uint32_t  *db;
+        uint16_t           free_idx;   /* what is completed contiguously */
+        uint16_t           ready_idx;  /* what is ready to be posted to hw */
+        uint16_t           sw_pi;      /* what is posted to hw */
+        uint16_t           mask;
     } rx;
 
     UCS_STATS_NODE_DECLARE(stats);
@@ -79,29 +96,14 @@ typedef struct {
 } uct_rc_mlx5_iface_t;
 
 
-/*
- * We can post if we're not starting further that max_pi.
- * See also uct_rc_mlx5_calc_max_pi().
- */
-#define UCT_RC_MLX5_CHECK_RES(_iface, _ep) \
-    if (!uct_rc_iface_have_tx_cqe_avail(&(_iface)->super)) { \
-        UCS_STATS_UPDATE_COUNTER((_iface)->super.stats, UCT_RC_IFACE_STAT_NO_CQE, 1); \
-        return UCS_ERR_NO_RESOURCE; \
-    } \
-    if ((_ep)->super.available == 0) { \
-        UCS_STATS_UPDATE_COUNTER((_ep)->super.stats, UCT_RC_EP_STAT_QP_FULL, 1); \
-        return UCS_ERR_NO_RESOURCE; \
-    }
-
 UCS_CLASS_DECLARE_NEW_FUNC(uct_rc_mlx5_ep_t, uct_ep_t, uct_iface_h);
 UCS_CLASS_DECLARE_DELETE_FUNC(uct_rc_mlx5_ep_t, uct_ep_t);
 
 ucs_status_t uct_rc_mlx5_ep_put_short(uct_ep_h tl_ep, const void *buffer, unsigned length,
                                       uint64_t remote_addr, uct_rkey_t rkey);
 
-ucs_status_t uct_rc_mlx5_ep_put_bcopy(uct_ep_h tl_ep, uct_pack_callback_t pack_cb,
-                                      void *arg, size_t length, uint64_t remote_addr,
-                                      uct_rkey_t rkey);
+ssize_t uct_rc_mlx5_ep_put_bcopy(uct_ep_h tl_ep, uct_pack_callback_t pack_cb,
+                                 void *arg, uint64_t remote_addr, uct_rkey_t rkey);
 
 ucs_status_t uct_rc_mlx5_ep_put_zcopy(uct_ep_h tl_ep, const void *buffer, size_t length,
                                       uct_mem_h memh, uint64_t remote_addr,
@@ -120,9 +122,8 @@ ucs_status_t uct_rc_mlx5_ep_get_zcopy(uct_ep_h tl_ep, void *buffer, size_t lengt
 ucs_status_t uct_rc_mlx5_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t header,
                                      const void *payload, unsigned length);
 
-ucs_status_t uct_rc_mlx5_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
-                                     uct_pack_callback_t pack_cb, void *arg,
-                                     size_t length);
+ssize_t uct_rc_mlx5_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
+                                uct_pack_callback_t pack_cb, void *arg);
 
 ucs_status_t uct_rc_mlx5_ep_am_zcopy(uct_ep_h tl_ep, uint8_t id, const void *header,
                                      unsigned header_length, const void *payload,

@@ -24,7 +24,15 @@
 #include <sched.h>
 
 /**
-* @defgroup RESOURCE   UCT Communication Resource
+ * @defgroup UCT_API Unified Communication Transport (UCT) API
+ * @{
+ * This section describes UCT API.
+ * @}
+ */
+
+/**
+* @defgroup UCT_RESOURCE   UCT Communication Resource
+* @ingroup UCT_API
 * @{
 * This section describes a concept of the Communication Resource and routines
 * associated with the concept.
@@ -32,12 +40,13 @@
 */
 
 /**
- * @defgroup CONTEXT    UCT Communication Context
+ * @defgroup UCT_CONTEXT    UCT Communication Context
+ * @ingroup UCT_API
  * @{
- * UCT context is a primary concept of UCX design which provides an isolation
- * mechanism, allowing resources associated with the context to separate or
- * share network communication context across multiple instances of parallel
- * programming models.
+ *
+ * UCT context abstracts all the resources required for network communication.
+ * It is designed to enable either share or isolate resources for multiple 
+ * programming models used by an application.
  *
  * This section provides a detailed description of this concept and
  * routines associated with it.
@@ -46,29 +55,38 @@
  */
 
 /**
- * @defgroup PD    UCT Protection Domain
+ * @defgroup UCT_PD    UCT Protection Domain
+ * @ingroup UCT_API
  * @{
- * The protection domain defines memory allocation, registration, key exchange
- * operations.
+ * The Protection Domain abstracts resources required for network communication,
+ * which typically includes memory, transport mechanisms, compute and 
+ * network resources. It is an isolation  mechanism that can be employed 
+ * by the applications for isolating resources between multiple programming models. 
+ * The attributes of the Protection Domain are defined by the structure @ref uct_pd_attr(). 
+ * The communication and memory operations are defined in the context of Protection Domain.
+ *
  * @}
  */
 
 /**
- * @defgroup AM   UCT Active messages
+ * @defgroup UCT_AM   UCT Active messages
+ * @ingroup UCT_API
  * @{
  * Defines active message functions.
  * @}
  */
 
 /**
- * @defgroup RMA  UCT Remote memeory access operations.
+ * @defgroup UCT_RMA  UCT Remote memeory access operations.
+ * @ingroup UCT_API
  * @{
  * Defines remote memory access operairons.
  * @}
  */
 
 /**
- * @defgroup AMO   UCT Atomic operations.
+ * @defgroup UCT_AMO   UCT Atomic operations.
+ * @ingroup UCT_API
  * @{
  * Defines atomic operations..
  * @}
@@ -76,7 +94,7 @@
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Protection domain resource descriptor.
  *
  * This structure describes a protection domain resource.
@@ -87,12 +105,12 @@ typedef struct uct_pd_resource_desc {
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Communication resource descriptor.
  *
  * Resource descriptor is an object representing the network resource.
  * Resource descriptor could represent a stand-alone communication resource
- * such as a HCA port, network interface, or multiple resources such as
+ * such as an HCA port, network interface, or multiple resources such as
  * multiple network interfaces or communication ports. It could also represent
  * virtual communication resources that are defined over a single physical
  * network interface.
@@ -108,7 +126,7 @@ typedef struct uct_tl_resource_desc {
 #define UCT_TL_RESOURCE_DESC_ARG(_resource)   (_resource)->tl_name, (_resource)->dev_name
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief  List of capabilities supported by UCX API
  *
  * The enumeration list presents a full list of operations and capabilities
@@ -119,6 +137,8 @@ enum {
     UCT_IFACE_FLAG_AM_SHORT       = UCS_BIT(0), /**< Short active message */
     UCT_IFACE_FLAG_AM_BCOPY       = UCS_BIT(1), /**< Buffered active message */
     UCT_IFACE_FLAG_AM_ZCOPY       = UCS_BIT(2), /**< Zero-copy active message */
+
+    UCT_IFACE_FLAG_PENDING        = UCS_BIT(3), /**< Pending operations */
 
     /* PUT capabilities */
     UCT_IFACE_FLAG_PUT_SHORT      = UCS_BIT(4), /**< Short put */
@@ -145,7 +165,8 @@ enum {
     UCT_IFACE_FLAG_ERRHANDLE_BCOPY_BUF  = UCS_BIT(33), /**< Invalid buffer for buffered operation */
     UCT_IFACE_FLAG_ERRHANDLE_ZCOPY_BUF  = UCS_BIT(34), /**< Invalid buffer for zero copy operation */
     UCT_IFACE_FLAG_ERRHANDLE_AM_ID      = UCS_BIT(35), /**< Invalid AM id on remote */
-    UCT_IFACE_FLAG_ERRHANDLE_REMOTE_MEM = UCS_BIT(35), /**<  Remote memory access */
+    UCT_IFACE_FLAG_ERRHANDLE_REMOTE_MEM = UCS_BIT(35), /**< Remote memory access */
+    UCT_IFACE_FLAG_ERRHANDLE_BCOPY_LEN  = UCS_BIT(36), /**< Invalid length for buffered operation */
 
     /* Connection establishment */
     UCT_IFACE_FLAG_CONNECT_TO_IFACE = UCS_BIT(40), /**< Supports connecting to interface */
@@ -158,7 +179,7 @@ enum {
 
 
 /**
- * @ingroup CONTEXT
+ * @ingroup UCT_CONTEXT
  * @brief  Memory allocation methods.
  */
 typedef enum {
@@ -172,7 +193,7 @@ typedef enum {
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Interface attributes: capabilities and limitations.
  */
 struct uct_iface_attr {
@@ -204,7 +225,7 @@ struct uct_iface_attr {
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief  Protection domain capability flags.
  */
 enum {
@@ -214,8 +235,12 @@ enum {
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief  Protection domain attributes.
+ *
+ * This structure defines the attributes of a Protection Domain which includes
+ * maximum memory that can be allocated, credentials required for accessing the memory, 
+ * and CPU mask indicating the proximity of CPUs. 
  */
 struct uct_pd_attr {
     struct {
@@ -231,11 +256,12 @@ struct uct_pd_attr {
 
 
 /**
- * @ingroup PD
- * @brief Describes a memory allocated by UCT.
- *
- * This structure describes a memory block allocated by UCT layer. The block
- * could be allocated with one of several methods by @ref uct_mem_alloc().
+ * @ingroup UCT_PD
+ * @brief Describes a memory allocated by UCT. 
+ * 
+ * This structure describes the memory block which includes the address, size, and
+ * Protection Domain used for allocation. This structure is passed to interface 
+ * and the memory is allocated by memory allocation functions @ref uct_mem_alloc.
  */
 typedef struct uct_allocated_memory {
     void                     *address; /**< Address of allocated memory */
@@ -247,8 +273,11 @@ typedef struct uct_allocated_memory {
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief Remote key with its type
+ *
+ * This structure describes the credentials (typically key) and information 
+ * required to access the remote memory by the communication interfaces. 
  */
 typedef struct uct_rkey_bundle {
     uct_rkey_t               rkey;    /**< Remote key descriptor, passed to RMA functions */
@@ -258,7 +287,7 @@ typedef struct uct_rkey_bundle {
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Completion handle.
  *
  * This structure should be allocated by the user and can be passed to communication
@@ -280,7 +309,7 @@ struct uct_completion {
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Pending request.
  *
  * This structure should be passed to uct_pending_add() and is used to signal
@@ -296,7 +325,7 @@ extern const char *uct_alloc_method_names[];
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Query for memory resources.
  *
  * Obtain the list of protection domain resources available on the current system.
@@ -311,7 +340,7 @@ ucs_status_t uct_query_pd_resources(uct_pd_resource_desc_t **resources_p,
                                     unsigned *num_resources_p);
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Release the list of resources returned from @ref uct_query_pd_resources.
  *
  * This routine releases the memory associated with the list of resources
@@ -323,7 +352,7 @@ void uct_release_pd_resource_list(uct_pd_resource_desc_t *resources);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Open a protection domain.
  *
  * Open a specific protection domain. All communications and memory operations
@@ -332,14 +361,18 @@ void uct_release_pd_resource_list(uct_pd_resource_desc_t *resources);
  *
  * @param [in]  pd_name         Protection domain name, as returned from @ref
  *                              uct_query_pd_resources.
+ * @param [in]  config          PD configuration options. Should be obtained
+ *                              from uct_pd_config_read() function, or point to
+ *                              PD-specific structure which extends uct_pd_config_t.
  * @param [out] pd_p            Filled with a handle to the protection domain.
  *
  * @return Error code.
  */
-ucs_status_t uct_pd_open(const char *pd_name, uct_pd_h *pd_p);
+ucs_status_t uct_pd_open(const char *pd_name, const uct_pd_config_t *config,
+                         uct_pd_h *pd_p);
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Close a protection domain.
  *
  * @param [in]  pd               Protection domain to close.
@@ -348,7 +381,7 @@ void uct_pd_close(uct_pd_h pd);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Query for transport resources.
  *
  * This routine queries the @ref uct_pd_t "protection domain" for communication
@@ -367,7 +400,7 @@ ucs_status_t uct_pd_query_tl_resources(uct_pd_h pd,
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Release the list of resources returned from @ref uct_pd_query_tl_resources.
  *
  * This routine releases the memory associated with the list of resources
@@ -379,7 +412,7 @@ void uct_release_tl_resource_list(uct_tl_resource_desc_t *resources);
 
 
 /**
- * @ingroup CONTEXT
+ * @ingroup UCT_CONTEXT
  * @brief Create a worker object.
  *
  *  The worker represents a progress engine. Multiple progress engines can be
@@ -400,7 +433,7 @@ ucs_status_t uct_worker_create(ucs_async_context_t *async,
 
 
 /**
- * @ingroup CONTEXT
+ * @ingroup UCT_CONTEXT
  * @brief Destroy a worker object.
  *
  * @param [in]  worker        Worker object to destroy.
@@ -409,7 +442,7 @@ void uct_worker_destroy(uct_worker_h worker);
 
 
 /**
- * @ingroup CONTEXT
+ * @ingroup UCT_CONTEXT
  * @brief Explicit progress for UCT worker.
  *
  * This routine explicitly progresses any outstanding communication operations
@@ -424,7 +457,7 @@ void uct_worker_progress(uct_worker_h worker);
 
 
 /**
- * @ingroup CONTEXT
+ * @ingroup UCT_CONTEXT
  * @brief Add a callback function to a worker progress.
  *
  * Add a function which will be called every time a progress is made on the worker.
@@ -442,7 +475,7 @@ void uct_worker_progress_register(uct_worker_h worker,
 
 
 /**
- * @ingroup CONTEXT
+ * @ingroup UCT_CONTEXT
  * @brief Remove a callback function from worker's progress.
  *
  * Remove a previously added function from worker's progress.
@@ -460,7 +493,7 @@ void uct_worker_progress_unregister(uct_worker_h worker,
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Read transport-specific interface configuration.
  *
  * @param [in]  tl_name       Transport name.
@@ -479,43 +512,43 @@ ucs_status_t uct_iface_config_read(const char *tl_name, const char *env_prefix,
 
 
 /**
- * @ingroup RESOURCE
- * @brief Release configuration memory returned from uct_iface_read_config().
+ * @ingroup UCT_RESOURCE
+ * @brief Release configuration memory returned from uct_iface_config_read() or
+ * from uct_pd_config_read().
  *
  * @param [in]  config        Configuration to release.
  */
-void uct_iface_config_release(uct_iface_config_t *config);
+void uct_config_release(void *config);
 
 
 /**
- * @ingroup RESOURCE
- * @brief Print interface configuration to a stream.
+ * @ingroup UCT_RESOURCE
+ * @brief Print interface/PD configuration to a stream.
  *
  * @param [in]  config        Configuration to print.
  * @param [in]  stream        Output stream to print to.
  * @param [in]  title         Title to the output.
  * @param [in]  print_flags   Controls how the configuration is printed.
  */
-void uct_iface_config_print(const uct_iface_config_t *config, FILE *stream,
-                            const char *title, ucs_config_print_flags_t print_flags);
+void uct_config_print(const void *config, FILE *stream, const char *title,
+                      ucs_config_print_flags_t print_flags);
 
 
 /**
- * @ingroup CONTEXT
- * @brief Print interface configuration to a stream.
+ * @ingroup UCT_CONTEXT
+ * @brief Modify interface/PD configuration.
  *
- * @param [in]  config        Configuration to release.
+ * @param [in]  config        Configuration to modify.
  * @param [in]  name          Configuration variable name.
  * @param [in]  value         Value to set.
  *
  * @return Error code.
  */
-ucs_status_t uct_iface_config_modify(uct_iface_config_t *config,
-                                     const char *name, const char *value);
+ucs_status_t uct_config_modify(void *config, const char *name, const char *value);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Open a communication interface.
  *
  * @param [in]  pd            Protection domain to create the interface on.
@@ -525,7 +558,7 @@ ucs_status_t uct_iface_config_modify(uct_iface_config_t *config,
  * @param [in]  dev_name      Hardware device name,
  * @param [in]  rx_headroom   How much bytes to reserve before the receive segment.
  * @param [in]  config        Interface configuration options. Should be obtained
- *                            from uct_iface_read_config() function, or point to
+ *                            from uct_iface_config_read() function, or point to
  *                            transport-specific structure which extends uct_iface_config_t.
  * @param [out] iface_p       Filled with a handle to opened communication interface.
  *
@@ -538,7 +571,7 @@ ucs_status_t uct_iface_open(uct_pd_h pd, uct_worker_h worker,
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Close and destroy an interface.
  *
  * @param [in]  iface  Interface to close.
@@ -547,7 +580,7 @@ void uct_iface_close(uct_iface_h iface);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Get interface attributes.
  *
  * @param [in]  iface   Interface to query.
@@ -556,7 +589,7 @@ ucs_status_t uct_iface_query(uct_iface_h iface, uct_iface_attr_t *iface_attr);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Get interface address.
  *
  * @param [in]  iface       Interface to query.
@@ -567,7 +600,7 @@ ucs_status_t uct_iface_get_address(uct_iface_h iface, struct sockaddr *addr);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Check if remote iface address is reachable.
  *
  * This function checks if a remote address can be reached from a local interface.
@@ -584,7 +617,7 @@ int uct_iface_is_reachable(uct_iface_h iface, const struct sockaddr *addr);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  */
 ucs_status_t uct_iface_mem_alloc(uct_iface_h iface, size_t length,
                                  const char *name, uct_allocated_memory_t *mem);
@@ -593,7 +626,7 @@ void uct_iface_mem_free(const uct_allocated_memory_t *mem);
 
 
 /**
- * @ingroup AM
+ * @ingroup UCT_AM
  * @brief Set active message handler for the interface.
  *
  * Only one handler can be set of each active message ID, and setting a handler
@@ -609,7 +642,24 @@ ucs_status_t uct_iface_set_am_handler(uct_iface_h iface, uint8_t id,
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_AM
+ * @brief Set active message tracer for the interface.
+ *
+ * Sets a function which dumps active message debug information to a buffer,
+ * which is printed every time the an active message is sent or received, when
+ * data tracing is on. Without the trancer, only transport-level information is
+ * printed.
+ *
+ * @param [in]  iface    Interface to set the active message handler for.
+ * @param [in]  tracer   Active message tracer. NULL to clear.
+ * @param [in]  arg      Tracer custom argument.
+ */
+ucs_status_t uct_iface_set_am_tracer(uct_iface_h iface, uct_am_tracer_t tracer,
+                                     void *arg);
+
+
+/**
+ * @ingroup UCT_RESOURCE
  * @brief Create new endpoint.
  *
  * @param [in]  iface   Interface to create the endpoint on.
@@ -619,7 +669,7 @@ ucs_status_t uct_ep_create(uct_iface_h iface, uct_ep_h *ep_p);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Create an endpoint which is connected to remote interface.
  *
  * @param [in]  iface   Interface to create the endpoint on.
@@ -637,7 +687,7 @@ static inline ucs_status_t uct_ep_create_connected(uct_iface_h iface,
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Destroy an endpoint.
  *
  * @param [in] ep       Endpoint to destroy.
@@ -646,7 +696,7 @@ void uct_ep_destroy(uct_ep_h ep);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Get endpoint address.
  *
  * @param [in]  ep       Endpoint to query.
@@ -657,7 +707,7 @@ ucs_status_t uct_ep_get_address(uct_ep_h ep, struct sockaddr *addr);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Connect endpoint to a remote endpoint.
  *
  * @param [in] ep           Endpoint to connect.
@@ -668,7 +718,7 @@ ucs_status_t uct_ep_connect_to_ep(uct_ep_h ep, const struct sockaddr *addr);
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief Query for protection domain attributes. *
  *
  * @param [in]  pd       Protection domain to query.
@@ -678,7 +728,7 @@ ucs_status_t uct_pd_query(uct_pd_h pd, uct_pd_attr_t *pd_attr);
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief Allocate memory for zero-copy sends and remote access.
  *
  *  Allocate memory on the protection domain. In order to use this function, PD
@@ -696,7 +746,7 @@ ucs_status_t uct_pd_mem_alloc(uct_pd_h pd, size_t *length_p, void **address_p,
                               const char *name, uct_mem_h *memh_p);
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief Release memory allocated by @ref uct_pd_mem_alloc.
  *
  * @param [in]     pd          Protection domain memory was allocateed on.
@@ -706,7 +756,7 @@ ucs_status_t uct_pd_mem_free(uct_pd_h pd, uct_mem_h memh);
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief Register memory for zero-copy sends and remote access.
  *
  *  Register memory on the protection domain. In order to use this function, PD
@@ -722,7 +772,7 @@ ucs_status_t uct_pd_mem_reg(uct_pd_h pd, void *address, size_t length,
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief Undo the operation of @ref uct_pd_mem_reg().
  *
  * @param [in]  pd          Protection domain which was used to register the memory.
@@ -732,7 +782,7 @@ ucs_status_t uct_pd_mem_dereg(uct_pd_h pd, uct_mem_h memh);
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief Allocate memory for zero-copy communications and remote access.
  *
  * Allocate potentially registered memory. Every one of the provided allocation
@@ -761,7 +811,7 @@ ucs_status_t uct_mem_alloc(size_t min_length, uct_alloc_method_t *methods,
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  * @brief Release allocated memory.
  *
  * Release the memory allocated by @ref uct_mem_alloc.
@@ -771,9 +821,27 @@ ucs_status_t uct_mem_alloc(size_t min_length, uct_alloc_method_t *methods,
  */
 ucs_status_t uct_mem_free(const uct_allocated_memory_t *mem);
 
+/**
+ * @ingroup RESOURCE
+ * @brief Read the configuration of the PD component.
+ *
+ * @param [in]  name          Name of the PD or the PD component.
+ * @param [in]  env_prefix    If non-NULL, search for environment variables
+ *                            starting with this UCT_<prefix>_. Otherwise, search
+ *                            for environment variables starting with just UCT_.
+ * @param [in]  filename      If non-NULL, read configuration from this file. If
+ *                            the file does not exist, it will be ignored.
+ * @param [out] config_p      Filled with a pointer to the configuration.
+ *
+ * @return Error code.
+ */
+ucs_status_t uct_pd_config_read(const char *name, const char *env_prefix,
+                                const char *filename,
+                                uct_pd_config_t **config_p);
+
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  *
  * @brief Pack a remote key.
  *
@@ -787,7 +855,7 @@ ucs_status_t uct_pd_mkey_pack(uct_pd_h pd, uct_mem_h memh, void *rkey_buffer);
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  *
  * @brief Unpack a remote key.
  *
@@ -800,7 +868,7 @@ ucs_status_t uct_rkey_unpack(const void *rkey_buffer, uct_rkey_bundle_t *rkey_ob
 
 
 /**
- * @ingroup PD
+ * @ingroup UCT_PD
  *
  * @brief Release a remote key.
  *
@@ -810,7 +878,7 @@ ucs_status_t uct_rkey_release(const uct_rkey_bundle_t *rkey_ob);
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_iface_flush(uct_iface_h iface)
@@ -820,7 +888,7 @@ UCT_INLINE_API ucs_status_t uct_iface_flush(uct_iface_h iface)
 
 
 /**
- * @ingroup AM
+ * @ingroup UCT_AM
  * @brief Release active message descriptor, which was passed to the active
  * message callback, and owned by the callee.
  *
@@ -834,7 +902,7 @@ UCT_INLINE_API void uct_iface_release_am_desc(void *desc)
 
 
 /**
- * @ingroup RMA
+ * @ingroup UCT_RMA
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_put_short(uct_ep_h ep, const void *buffer, unsigned length,
@@ -845,19 +913,19 @@ UCT_INLINE_API ucs_status_t uct_ep_put_short(uct_ep_h ep, const void *buffer, un
 
 
 /**
- * @ingroup RMA
+ * @ingroup UCT_RMA
  * @brief
  */
-UCT_INLINE_API ucs_status_t uct_ep_put_bcopy(uct_ep_h ep, uct_pack_callback_t pack_cb,
-                                             void *arg, size_t length, uint64_t remote_addr,
-                                             uct_rkey_t rkey)
+UCT_INLINE_API ssize_t uct_ep_put_bcopy(uct_ep_h ep, uct_pack_callback_t pack_cb,
+                                        void *arg, uint64_t remote_addr,
+                                        uct_rkey_t rkey)
 {
-    return ep->iface->ops.ep_put_bcopy(ep, pack_cb, arg, length, remote_addr, rkey);
+    return ep->iface->ops.ep_put_bcopy(ep, pack_cb, arg, remote_addr, rkey);
 }
 
 
 /**
- * @ingroup RMA
+ * @ingroup UCT_RMA
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_put_zcopy(uct_ep_h ep, const void *buffer, size_t length,
@@ -870,7 +938,7 @@ UCT_INLINE_API ucs_status_t uct_ep_put_zcopy(uct_ep_h ep, const void *buffer, si
 
 
 /**
- * @ingroup RMA
+ * @ingroup UCT_RMA
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_get_bcopy(uct_ep_h ep, uct_unpack_callback_t unpack_cb,
@@ -884,7 +952,7 @@ UCT_INLINE_API ucs_status_t uct_ep_get_bcopy(uct_ep_h ep, uct_unpack_callback_t 
 
 
 /**
- * @ingroup RMA
+ * @ingroup UCT_RMA
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_get_zcopy(uct_ep_h ep, void *buffer, size_t length,
@@ -897,7 +965,7 @@ UCT_INLINE_API ucs_status_t uct_ep_get_zcopy(uct_ep_h ep, void *buffer, size_t l
 
 
 /**
- * @ingroup AM
+ * @ingroup UCT_AM
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_am_short(uct_ep_h ep, uint8_t id, uint64_t header,
@@ -908,19 +976,18 @@ UCT_INLINE_API ucs_status_t uct_ep_am_short(uct_ep_h ep, uint8_t id, uint64_t he
 
 
 /**
- * @ingroup AM
+ * @ingroup UCT_AM
  * @brief
  */
-UCT_INLINE_API ucs_status_t uct_ep_am_bcopy(uct_ep_h ep, uint8_t id,
-                                            uct_pack_callback_t pack_cb,
-                                            void *arg, size_t length)
+UCT_INLINE_API ssize_t uct_ep_am_bcopy(uct_ep_h ep, uint8_t id,
+                                       uct_pack_callback_t pack_cb, void *arg)
 {
-    return ep->iface->ops.ep_am_bcopy(ep, id, pack_cb, arg, length);
+    return ep->iface->ops.ep_am_bcopy(ep, id, pack_cb, arg);
 }
 
 
 /**
- * @ingroup AM
+ * @ingroup UCT_AM
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_am_zcopy(uct_ep_h ep, uint8_t id, void *header,
@@ -933,7 +1000,7 @@ UCT_INLINE_API ucs_status_t uct_ep_am_zcopy(uct_ep_h ep, uint8_t id, void *heade
 }
 
 /**
- * @ingroup AMO
+ * @ingroup UCT_AMO
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_atomic_add64(uct_ep_h ep, uint64_t add,
@@ -944,7 +1011,7 @@ UCT_INLINE_API ucs_status_t uct_ep_atomic_add64(uct_ep_h ep, uint64_t add,
 
 
 /**
- * @ingroup AMO
+ * @ingroup UCT_AMO
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_atomic_fadd64(uct_ep_h ep, uint64_t add,
@@ -956,7 +1023,7 @@ UCT_INLINE_API ucs_status_t uct_ep_atomic_fadd64(uct_ep_h ep, uint64_t add,
 
 
 /**
- * @ingroup AMO
+ * @ingroup UCT_AMO
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_atomic_swap64(uct_ep_h ep, uint64_t swap,
@@ -968,7 +1035,7 @@ UCT_INLINE_API ucs_status_t uct_ep_atomic_swap64(uct_ep_h ep, uint64_t swap,
 
 
 /**
- * @ingroup AMO
+ * @ingroup UCT_AMO
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_atomic_cswap64(uct_ep_h ep, uint64_t compare, uint64_t swap,
@@ -980,7 +1047,7 @@ UCT_INLINE_API ucs_status_t uct_ep_atomic_cswap64(uct_ep_h ep, uint64_t compare,
 
 
 /**
- * @ingroup AMO
+ * @ingroup UCT_AMO
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_atomic_add32(uct_ep_h ep, uint32_t add,
@@ -991,7 +1058,7 @@ UCT_INLINE_API ucs_status_t uct_ep_atomic_add32(uct_ep_h ep, uint32_t add,
 
 
 /**
- * @ingroup AMO
+ * @ingroup UCT_AMO
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_atomic_fadd32(uct_ep_h ep, uint32_t add,
@@ -1003,7 +1070,7 @@ UCT_INLINE_API ucs_status_t uct_ep_atomic_fadd32(uct_ep_h ep, uint32_t add,
 
 
 /**
- * @ingroup AMO
+ * @ingroup UCT_AMO
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_atomic_swap32(uct_ep_h ep, uint32_t swap,
@@ -1015,7 +1082,7 @@ UCT_INLINE_API ucs_status_t uct_ep_atomic_swap32(uct_ep_h ep, uint32_t swap,
 
 
 /**
- * @ingroup AMO
+ * @ingroup UCT_AMO
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_atomic_cswap32(uct_ep_h ep, uint32_t compare, uint32_t swap,
@@ -1027,7 +1094,7 @@ UCT_INLINE_API ucs_status_t uct_ep_atomic_cswap32(uct_ep_h ep, uint32_t compare,
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Add a pending request to an endpoint.
  *
  *  Add a pending request to the endpoint pending queue. The request will be
@@ -1052,26 +1119,23 @@ UCT_INLINE_API ucs_status_t uct_ep_pending_add(uct_ep_h ep, uct_pending_req_t *r
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief Remove all pending requests from an endpoint.
  *
  *  Remove pending requests from the given endpoint and pass them to the provided
- * callback function. The callback returns != UCS_OK, processing would stop and
- * this value would be returned.
+ * callback function. The callback return value is ignored.
  *
  * @param [in]  ep  Endpoint to remove pending requests from.
  * @param [in]  cb  Callback to pass the removed requests to.
- *
- * @return Return value from the provided callback.
  */
-UCT_INLINE_API ucs_status_t uct_ep_pending_purge(uct_ep_h ep, uct_pending_callback_t cb)
+UCT_INLINE_API void uct_ep_pending_purge(uct_ep_h ep, uct_pending_callback_t cb)
 {
-    return ep->iface->ops.ep_pending_purge(ep, cb);
+    ep->iface->ops.ep_pending_purge(ep, cb);
 }
 
 
 /**
- * @ingroup RESOURCE
+ * @ingroup UCT_RESOURCE
  * @brief
  */
 UCT_INLINE_API ucs_status_t uct_ep_flush(uct_ep_h ep)

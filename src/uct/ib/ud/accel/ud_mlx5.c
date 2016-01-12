@@ -6,8 +6,8 @@
 
 #include <uct/api/uct.h>
 #include <uct/ib/base/ib_iface.h>
-#include <uct/tl/context.h>
-#include <uct/tl/tl_log.h>
+#include <uct/base/uct_pd.h>
+#include <uct/base/uct_log.h>
 #include <ucs/debug/log.h>
 #include <ucs/debug/memtrack.h>
 #include <ucs/type/class.h>
@@ -36,7 +36,7 @@ uct_ud_mlx5_post_send(uct_ud_mlx5_iface_t *iface, uct_ud_mlx5_ep_t *ep,
                              wqe_size);
     uct_ib_mlx5_set_dgram_seg((struct mlx5_wqe_datagram_seg *)(ctrl+1),
                               &ep->av, 0);
-    uct_ib_mlx5_log_tx(IBV_QPT_UD, ctrl, 
+    uct_ib_mlx5_log_tx(&iface->super.super, IBV_QPT_UD, ctrl,
                        iface->tx.wq.qstart, iface->tx.wq.qend, NULL);
     iface->super.tx.available -= uct_ib_mlx5_post_send(&iface->tx.wq,
                                                        ctrl, wqe_size);
@@ -136,7 +136,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ud_mlx5_ep_t)
 
 UCS_CLASS_DEFINE(uct_ud_mlx5_ep_t, uct_ud_ep_t);
 static UCS_CLASS_DEFINE_NEW_FUNC(uct_ud_mlx5_ep_t, uct_ep_t, uct_iface_h);
-static UCS_CLASS_DEFINE_DELETE_FUNC(uct_ud_mlx5_ep_t, uct_ep_t);
+UCS_CLASS_DEFINE_DELETE_FUNC(uct_ud_mlx5_ep_t, uct_ep_t);
 
 
 static ucs_status_t
@@ -160,8 +160,11 @@ uct_ud_mlx5_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t hdr,
     UCT_CHECK_LENGTH(sizeof(uct_ud_neth_t) + sizeof(hdr) + length,
                     iface->super.config.max_inline, "am_short");
 
+    uct_ud_enter(&iface->super);
+    uct_ud_iface_progress_pending_tx(&iface->super);
     skb = uct_ud_ep_get_tx_skb(&iface->super, &ep->super);
     if (!skb) {
+        uct_ud_leave(&iface->super);
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -190,31 +193,34 @@ uct_ud_mlx5_ep_am_short(uct_ep_h tl_ep, uint8_t id, uint64_t hdr,
     memcpy(skb->neth, neth, skb->len); 
     uct_ud_iface_complete_tx_inl(&iface->super, &ep->super, skb,
                                  (char *)skb->neth + skb->len, buffer, length);
+    uct_ud_leave(&iface->super);
     return UCS_OK;
 }
 
-static ucs_status_t uct_ud_mlx5_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
-                                            uct_pack_callback_t pack_cb,
-                                            void *arg, size_t length)
+static ssize_t uct_ud_mlx5_ep_am_bcopy(uct_ep_h tl_ep, uint8_t id,
+                                       uct_pack_callback_t pack_cb, void *arg)
 {
     uct_ud_mlx5_ep_t *ep = ucs_derived_of(tl_ep, uct_ud_mlx5_ep_t);
     uct_ud_mlx5_iface_t *iface = ucs_derived_of(tl_ep->iface,
                                                 uct_ud_mlx5_iface_t);
     uct_ud_send_skb_t *skb;
     ucs_status_t status;
+    size_t length;
 
-    UCT_CHECK_LENGTH(sizeof(uct_ud_neth_t) + length, 
-                     4096 /* TODO */, "am_bcopy");
+    uct_ud_enter(&iface->super);
+    uct_ud_iface_progress_pending_tx(&iface->super);
     status = uct_ud_am_common(&iface->super, &ep->super, id, &skb);
     if (status != UCS_OK) {
+        uct_ud_leave(&iface->super);
         return status;
     }
 
-    uct_ud_skb_bcopy(skb, pack_cb, arg, length);
+    length = uct_ud_skb_bcopy(skb, pack_cb, arg);
 
     uct_ud_mlx5_ep_tx_skb(iface, ep, skb);
     uct_ud_iface_complete_tx_skb(&iface->super, &ep->super, skb);
-    return UCS_OK;
+    uct_ud_leave(&iface->super);
+    return length;
 }
 
 static ucs_status_t 
@@ -231,8 +237,11 @@ uct_ud_mlx5_ep_put_short(uct_ep_h tl_ep, const void *buffer, unsigned length,
     uct_ud_neth_t *neth;
     uct_ud_send_skb_t *skb;
 
+    uct_ud_enter(&iface->super);
+    uct_ud_iface_progress_pending_tx(&iface->super);
     skb = uct_ud_ep_get_tx_skb(&iface->super, &ep->super);
     if (!skb) {
+        uct_ud_leave(&iface->super);
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -264,6 +273,7 @@ uct_ud_mlx5_ep_put_short(uct_ep_h tl_ep, const void *buffer, unsigned length,
     memcpy(skb->neth, neth, skb->len); 
     uct_ud_iface_complete_tx_inl(&iface->super, &ep->super, skb,
                                  (char *)skb->neth + skb->len, buffer, length);
+    uct_ud_leave(&iface->super);
     return UCS_OK;
 }
 
@@ -328,20 +338,32 @@ uct_ud_mlx5_iface_poll_tx(uct_ud_mlx5_iface_t *iface)
     iface->super.tx.available = uct_ib_mlx5_txwq_update_bb(&iface->tx.wq, ntohs(cqe->wqe_counter));
 }
 
-
-
 static void uct_ud_mlx5_iface_progress(void *arg)
 {
     uct_ud_mlx5_iface_t *iface = arg;
     ucs_status_t status;
 
+    uct_ud_enter(&iface->super);
     status = uct_ud_mlx5_iface_poll_rx(iface);
     if (status == UCS_ERR_NO_PROGRESS) {
         uct_ud_mlx5_iface_poll_tx(iface);
     }
-    if (uct_ud_iface_has_pending(&iface->super)) {
-        uct_ud_iface_progress_pending(&iface->super, uct_ud_mlx5_ep_tx_ctl_skb);
-    }
+    uct_ud_iface_progress_pending(&iface->super, 0);
+    uct_ud_leave(&iface->super);
+}
+
+static void uct_ud_mlx5_iface_async_progress(void *arg)
+{
+    uct_ud_mlx5_iface_t *iface = arg;
+    ucs_status_t status;
+
+    do {
+        status = uct_ud_mlx5_iface_poll_rx(iface);
+    } while (status == UCS_OK);
+
+    uct_ud_mlx5_iface_poll_tx(iface);
+    uct_ud_iface_progress_pending(&iface->super, 1);
+
 }
 
 static ucs_status_t 
@@ -388,14 +410,17 @@ uct_ud_mlx5_ep_create_connected(uct_iface_h iface_h,
     uct_ud_send_skb_t *skb;
     ucs_status_t status;
 
+    uct_ud_enter(&iface->super);
     status = uct_ud_ep_create_connected_common(&iface->super, if_addr,
                                                &new_ud_ep, &skb);
     if (status != UCS_OK) {
+        uct_ud_leave(&iface->super);
         return status;
     }
     ep = ucs_derived_of(new_ud_ep, uct_ud_mlx5_ep_t);
     *new_ep_p = &ep->super.super.super;
     if (skb == NULL) {
+        uct_ud_leave(&iface->super);
         return UCS_OK;
     }
 
@@ -407,10 +432,12 @@ uct_ud_mlx5_ep_create_connected(uct_iface_h iface_h,
     ucs_trace_data("TX: CREQ (qp=%x lid=%d)", if_addr->qp_num, if_addr->lid);
     uct_ud_mlx5_ep_tx_skb(iface, ep, skb);
     uct_ud_iface_complete_tx_skb(&iface->super, &ep->super, skb);
+    uct_ud_leave(&iface->super);
     return UCS_OK;
 
 err:
     uct_ud_ep_destroy_connected(&ep->super, if_addr);
+    uct_ud_leave(&iface->super);
     *new_ep_p = NULL;
     return status;
 }
@@ -450,7 +477,7 @@ uct_iface_ops_t uct_ud_mlx5_iface_ops = {
     .iface_query           = uct_ud_mlx5_iface_query,
 
     .ep_create             = UCS_CLASS_NEW_FUNC_NAME(uct_ud_mlx5_ep_t),
-    .ep_destroy            = UCS_CLASS_DELETE_FUNC_NAME(uct_ud_mlx5_ep_t),
+    .ep_destroy            = uct_ud_ep_disconnect, 
     .ep_get_address        = uct_ud_ep_get_address,
 
     .ep_create_connected   = uct_ud_mlx5_ep_create_connected,
@@ -460,8 +487,8 @@ uct_iface_ops_t uct_ud_mlx5_iface_ops = {
     .ep_am_short           = uct_ud_mlx5_ep_am_short,
     .ep_am_bcopy           = uct_ud_mlx5_ep_am_bcopy,
 
-    .ep_pending_add        = (void*)ucs_empty_function_return_success, /* TODO */
-    .ep_pending_purge      = (void*)ucs_empty_function_return_success,
+    .ep_pending_add        = uct_ud_ep_pending_add,
+    .ep_pending_purge      = uct_ud_ep_pending_purge,
 
     .ep_flush              = uct_ud_ep_flush
 };
@@ -482,6 +509,9 @@ static UCS_CLASS_INIT_FUNC(uct_ud_mlx5_iface_t,
     UCS_CLASS_CALL_SUPER_INIT(uct_ud_iface_t, &uct_ud_mlx5_iface_ops,
                               pd, worker,
                               dev_name, rx_headroom, 0, config);
+
+    self->super.ops.async_progress = uct_ud_mlx5_iface_async_progress;
+    self->super.ops.tx_skb         = uct_ud_mlx5_ep_tx_ctl_skb;
 
     status = uct_ib_mlx5_get_cq(self->super.super.send_cq, &self->tx.cq);
     if (status != UCS_OK) {
@@ -505,7 +535,8 @@ static UCS_CLASS_INIT_FUNC(uct_ud_mlx5_iface_t,
         return UCS_ERR_IO_ERROR;
     }
 
-    status = uct_ib_mlx5_get_txwq(self->super.qp, &self->tx.wq); 
+    status = uct_ib_mlx5_get_txwq(self->super.super.super.worker, self->super.qp,
+                                  &self->tx.wq);
     if (status != UCS_OK) {
         return UCS_ERR_IO_ERROR;
     }
@@ -528,6 +559,7 @@ static UCS_CLASS_INIT_FUNC(uct_ud_mlx5_iface_t,
     /* TODO: add progress on first ep creation */
     uct_worker_progress_register(worker, uct_ud_mlx5_iface_progress, self);
 
+    uct_ud_leave(&self->super);
     return UCS_OK;
 }
 
@@ -535,8 +567,12 @@ static UCS_CLASS_INIT_FUNC(uct_ud_mlx5_iface_t,
 static UCS_CLASS_CLEANUP_FUNC(uct_ud_mlx5_iface_t)
 {
     ucs_trace_func("");
+    uct_ud_enter(&self->super);
     uct_worker_progress_unregister(self->super.super.super.worker,
                                    uct_ud_mlx5_iface_progress, self);
+    uct_ib_mlx5_put_txwq(self->super.super.super.worker, &self->tx.wq);
+    UCT_UD_IFACE_DELETE_EPS(&self->super, uct_ud_mlx5_ep_t);
+    uct_ud_enter(&self->super);
 }
 
 UCS_CLASS_DEFINE(uct_ud_mlx5_iface_t, uct_ud_iface_t);

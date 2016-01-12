@@ -46,8 +46,10 @@ ucs_status_t ucs_wtimer_init(ucs_wtimer_t *t, ucs_callback_func_t func);
  *
  * @param twheel        Timer queue to initialize.
  * @param resolution    Timer resolution. Timer wheel range is from now to now + UCS_TWHEEL_NSLOTS * res
+ * @param current_time  Current time to initialize the timer with.
  */
-ucs_status_t ucs_twheel_init(ucs_twheel_t *twheel, ucs_time_t resolution);
+ucs_status_t ucs_twheel_init(ucs_twheel_t *twheel, ucs_time_t resolution,
+                             ucs_time_t current_time);
 
 
 /**
@@ -75,6 +77,13 @@ static inline void ucs_twheel_sweep(ucs_twheel_t *t, ucs_time_t current_time)
     }
 }
 
+/**
+ * Get current time
+ */
+static inline ucs_time_t ucs_twheel_get_time(ucs_twheel_t *t)
+{
+    return t->now;
+}
 
 /**
  * Add a one shot timer.

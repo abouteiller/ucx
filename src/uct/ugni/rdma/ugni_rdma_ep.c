@@ -6,89 +6,18 @@
 #include <ucs/datastruct/sglib_wrapper.h>
 #include <ucs/debug/memtrack.h>
 #include <ucs/debug/log.h>
-#include <uct/tl/tl_log.h>
+#include <uct/base/uct_log.h>
 
 #include "ugni_rdma_ep.h"
 #include "ugni_rdma_iface.h"
 #include <uct/ugni/base/ugni_device.h>
 
-static inline ptrdiff_t uct_ugni_ep_compare(uct_ugni_ep_t *ep1, uct_ugni_ep_t *ep2)
-{
-    return ep1->hash_key - ep2->hash_key;
-}
-
-static inline unsigned uct_ugni_ep_hash(uct_ugni_ep_t *ep)
-{
-    return ep->hash_key;
-}
-
+/* Endpoint operations */
 static inline void uct_ugni_invoke_orig_comp(uct_ugni_rdma_fetch_desc_t *fma)
 {
     if (ucs_likely(NULL != fma->orig_comp_cb)) {
         uct_invoke_completion(fma->orig_comp_cb);
     }
-}
-
-SGLIB_DEFINE_LIST_PROTOTYPES(uct_ugni_ep_t, uct_ugni_ep_compare, next);
-SGLIB_DEFINE_HASHED_CONTAINER_PROTOTYPES(uct_ugni_ep_t, UCT_UGNI_HASH_SIZE, uct_ugni_ep_hash);
-SGLIB_DEFINE_LIST_FUNCTIONS(uct_ugni_ep_t, uct_ugni_ep_compare, next);
-SGLIB_DEFINE_HASHED_CONTAINER_FUNCTIONS(uct_ugni_ep_t, UCT_UGNI_HASH_SIZE, uct_ugni_ep_hash);
-
-static UCS_CLASS_INIT_FUNC(uct_ugni_ep_t, uct_iface_t *tl_iface,
-                           const struct sockaddr *addr)
-{
-    uct_ugni_iface_t *iface = ucs_derived_of(tl_iface, uct_ugni_iface_t);
-    const uct_sockaddr_ugni_t *iface_addr = (const uct_sockaddr_ugni_t*)addr;
-    gni_return_t ugni_rc;
-
-    UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super)
-
-    ugni_rc = GNI_EpCreate(iface->nic_handle, iface->local_cq, &self->ep);
-    if (GNI_RC_SUCCESS != ugni_rc) {
-        ucs_error("GNI_CdmCreate failed, Error status: %s %d",
-                  gni_err_str[ugni_rc], ugni_rc);
-        return UCS_ERR_NO_DEVICE;
-    }
-
-    ugni_rc = GNI_EpBind(self->ep, iface_addr->nic_addr, iface_addr->domain_id);
-    if (GNI_RC_SUCCESS != ugni_rc) {
-        (void)GNI_EpDestroy(self->ep);
-        ucs_error("GNI_EpBind failed, Error status: %s %d",
-                  gni_err_str[ugni_rc], ugni_rc);
-        return UCS_ERR_UNREACHABLE;
-    }
-
-    ucs_debug("Binding ep %p to address (%d %d)", self, iface_addr->nic_addr,
-              iface_addr->domain_id);
-
-    self->outstanding = 0;
-    self->hash_key = (uintptr_t)&self->ep;
-    sglib_hashed_uct_ugni_ep_t_add(iface->eps, self);
-    return UCS_OK;
-}
-
-static UCS_CLASS_CLEANUP_FUNC(uct_ugni_ep_t)
-{
-    uct_ugni_iface_t *iface = ucs_derived_of(self->super.super.iface,
-                                             uct_ugni_iface_t);
-    gni_return_t ugni_rc;
-
-    ugni_rc = GNI_EpDestroy(self->ep);
-    if (GNI_RC_SUCCESS != ugni_rc) {
-        ucs_warn("GNI_EpDestroy failed, Error status: %s %d",
-                  gni_err_str[ugni_rc], ugni_rc);
-    }
-    sglib_hashed_uct_ugni_ep_t_delete(iface->eps, self);
-}
-UCS_CLASS_DEFINE(uct_ugni_ep_t, uct_base_ep_t)
-UCS_CLASS_DEFINE_NEW_FUNC(uct_ugni_ep_t, uct_ep_t, uct_iface_t*, const struct sockaddr*);
-UCS_CLASS_DEFINE_DELETE_FUNC(uct_ugni_ep_t, uct_ep_t);
-
-uct_ugni_ep_t *uct_ugni_iface_lookup_ep(uct_ugni_iface_t *iface, uintptr_t hash_key)
-{
-    uct_ugni_ep_t tmp;
-    tmp.hash_key = hash_key;
-    return sglib_hashed_uct_ugni_ep_t_find_member(iface->eps, &tmp);
 }
 
 static inline void uct_ugni_format_fma(uct_ugni_base_desc_t *fma, gni_post_type_t type,
@@ -181,10 +110,10 @@ static inline ucs_status_t uct_ugni_post_rdma(uct_ugni_rdma_iface_t *iface,
     return UCS_INPROGRESS;
 }
 
-static inline ucs_status_t uct_ugni_post_fma(uct_ugni_rdma_iface_t *iface,
-                                             uct_ugni_ep_t *ep,
-                                             uct_ugni_base_desc_t *fma,
-                                             ucs_status_t ok_status)
+static inline ssize_t uct_ugni_post_fma(uct_ugni_rdma_iface_t *iface,
+                                        uct_ugni_ep_t *ep,
+                                        uct_ugni_base_desc_t *fma,
+                                        ssize_t ok_status)
 {
     gni_return_t ugni_rc;
 
@@ -208,12 +137,6 @@ static inline ucs_status_t uct_ugni_post_fma(uct_ugni_rdma_iface_t *iface,
     return ok_status;
 }
 
-#define UCT_UGNI_ZERO_LENGTH_POST(len)              \
-if (0 == len) {                                     \
-    ucs_trace_data("Zero length request: skip it"); \
-    return UCS_OK;                                  \
-}
-
 ucs_status_t uct_ugni_ep_put_short(uct_ep_h tl_ep, const void *buffer,
                                    unsigned length, uint64_t remote_addr,
                                    uct_rkey_t rkey)
@@ -222,7 +145,7 @@ ucs_status_t uct_ugni_ep_put_short(uct_ep_h tl_ep, const void *buffer,
     uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
     uct_ugni_base_desc_t *fma;
 
-    UCT_UGNI_ZERO_LENGTH_POST(length);
+    UCT_SKIP_ZERO_LENGTH(length);
     UCT_CHECK_LENGTH(length, iface->config.fma_seg_size, "put_short");
     UCT_TL_IFACE_GET_TX_DESC(&iface->super.super, &iface->free_desc,
                              fma, return UCS_ERR_NO_RESOURCE);
@@ -238,9 +161,8 @@ ucs_status_t uct_ugni_ep_put_short(uct_ep_h tl_ep, const void *buffer,
     return uct_ugni_post_fma(iface, ep, fma, UCS_OK);
 }
 
-ucs_status_t uct_ugni_ep_put_bcopy(uct_ep_h tl_ep, uct_pack_callback_t pack_cb,
-                                   void *arg, size_t length, uint64_t remote_addr,
-                                   uct_rkey_t rkey)
+ssize_t uct_ugni_ep_put_bcopy(uct_ep_h tl_ep, uct_pack_callback_t pack_cb,
+                              void *arg, uint64_t remote_addr, uct_rkey_t rkey)
 {
     /* Since custom pack function is used
      * we have to allocate separate memory to pack
@@ -250,13 +172,14 @@ ucs_status_t uct_ugni_ep_put_bcopy(uct_ep_h tl_ep, uct_pack_callback_t pack_cb,
     uct_ugni_ep_t *ep = ucs_derived_of(tl_ep, uct_ugni_ep_t);
     uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
     uct_ugni_base_desc_t *fma;
+    size_t length;
 
-    UCT_UGNI_ZERO_LENGTH_POST(length);
-    UCT_CHECK_LENGTH(length, iface->config.fma_seg_size, "put_bcopy");
     UCT_TL_IFACE_GET_TX_DESC(&iface->super.super, &iface->free_desc_buffer,
                              fma, return UCS_ERR_NO_RESOURCE);
-    ucs_assert(length <= iface->config.fma_seg_size);
-    pack_cb(fma + 1, arg, length);
+
+    length = pack_cb(fma + 1, arg);
+    UCT_SKIP_ZERO_LENGTH(length, fma);
+
     uct_ugni_format_fma(fma, GNI_POST_FMA_PUT, fma + 1,
                         remote_addr, rkey, length, ep, NULL, NULL);
     ucs_trace_data("Posting PUT BCOPY, GNI_PostFma of size %"PRIx64" from %p to "
@@ -266,7 +189,7 @@ ucs_status_t uct_ugni_ep_put_bcopy(uct_ep_h tl_ep, uct_pack_callback_t pack_cb,
                    (void *)fma->desc.remote_addr,
                    fma->desc.remote_mem_hndl.qword1,
                    fma->desc.remote_mem_hndl.qword2);
-    return uct_ugni_post_fma(iface, ep, fma, UCS_OK);
+    return uct_ugni_post_fma(iface, ep, fma, length);
 }
 
 ucs_status_t uct_ugni_ep_put_zcopy(uct_ep_h tl_ep, const void *buffer, size_t length,
@@ -277,7 +200,7 @@ ucs_status_t uct_ugni_ep_put_zcopy(uct_ep_h tl_ep, const void *buffer, size_t le
     uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
     uct_ugni_base_desc_t *rdma;
 
-    UCT_UGNI_ZERO_LENGTH_POST(length);
+    UCT_SKIP_ZERO_LENGTH(length);
     UCT_CHECK_LENGTH(length, iface->config.rdma_max_size, "put_zcopy");
     UCT_TL_IFACE_GET_TX_DESC(&iface->super.super, &iface->free_desc, rdma,
                              return UCS_ERR_NO_RESOURCE);
@@ -350,13 +273,6 @@ ucs_status_t uct_ugni_ep_atomic_fadd64(uct_ep_h tl_ep, uint64_t add,
     return uct_ugni_post_fma(iface, ep, &fma->super, UCS_INPROGRESS);
 }
 
-ucs_status_t uct_ugni_ep_atomic_swap64(uct_ep_h tl_ep, uint64_t swap,
-                                       uint64_t remote_addr, uct_rkey_t rkey,
-                                       uint64_t *result, uct_completion_t *comp)
-{
-    return UCS_ERR_UNSUPPORTED;
-}
-
 ucs_status_t uct_ugni_ep_atomic_cswap64(uct_ep_h tl_ep, uint64_t compare, uint64_t swap,
                                         uint64_t remote_addr, uct_rkey_t rkey,
                                         uint64_t *result, uct_completion_t *comp)
@@ -379,37 +295,123 @@ ucs_status_t uct_ugni_ep_atomic_cswap64(uct_ep_h tl_ep, uint64_t compare, uint64
     return uct_ugni_post_fma(iface, ep, &fma->super, UCS_INPROGRESS);
 }
 
+static void uct_ugni_amo_unpack32(uct_completion_t *self)
+{
+    uct_ugni_rdma_fetch_desc_t *fma = (uct_ugni_rdma_fetch_desc_t *)
+        ucs_container_of(self, uct_ugni_rdma_fetch_desc_t, tmp);
+
+    /* Call the orignal callback and skip padding */
+    *(uint32_t *)fma->user_buffer = *(uint32_t *)(fma + 1);
+    uct_ugni_invoke_orig_comp(fma);
+}
+
+ucs_status_t uct_ugni_ep_atomic_swap64(uct_ep_h tl_ep, uint64_t swap,
+                                       uint64_t remote_addr, uct_rkey_t rkey,
+                                       uint64_t *result, uct_completion_t *comp)
+{
+    uct_ugni_ep_t *ep = ucs_derived_of(tl_ep, uct_ugni_ep_t);
+    uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
+    uct_ugni_rdma_fetch_desc_t *fma;
+
+    UCT_TL_IFACE_GET_TX_DESC(&iface->super.super, &iface->free_desc_famo, fma,
+                             return UCS_ERR_NO_RESOURCE);
+    uct_ugni_format_fma_amo(fma, GNI_POST_AMO, GNI_FMA_ATOMIC2_FSWAP,
+                            swap, 0, fma + 1, remote_addr,
+                            rkey, LEN_64, ep, comp, uct_ugni_amo_unpack64, (void *)result);
+    ucs_trace_data("Posting AMO SWAP, GNI_PostFma of size %"PRIx64" value"
+                   "%"PRIx64" to %p, with [%"PRIx64" %"PRIx64"]",
+                   fma->super.desc.length, swap,
+                   (void *)fma->super.desc.remote_addr,
+                   fma->super.desc.remote_mem_hndl.qword1,
+                   fma->super.desc.remote_mem_hndl.qword2);
+    return uct_ugni_post_fma(iface, ep, &fma->super, UCS_INPROGRESS);
+}
+
 ucs_status_t uct_ugni_ep_atomic_add32(uct_ep_h tl_ep, uint32_t add,
                                       uint64_t remote_addr, uct_rkey_t rkey)
 {
-    return UCS_ERR_UNSUPPORTED;
+    uct_ugni_ep_t *ep = ucs_derived_of(tl_ep, uct_ugni_ep_t);
+    uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
+    uct_ugni_rdma_fetch_desc_t *fma;
+
+    UCT_TL_IFACE_GET_TX_DESC(&iface->super.super, &iface->free_desc_famo, fma,
+                             return UCS_ERR_NO_RESOURCE);
+    uct_ugni_format_fma_amo(fma, GNI_POST_AMO, GNI_FMA_ATOMIC2_IADD_S,
+                            (uint64_t)add, 0, NULL, remote_addr,
+                            rkey, LEN_32, ep, NULL, NULL, NULL);
+    ucs_trace_data("Posting AMO ADD, GNI_PostFma of size %"PRIx64" value"
+                   "%"PRIx32" to %p, with [%"PRIx64" %"PRIx64"]",
+                   fma->super.desc.length, add,
+                   (void *)fma->super.desc.remote_addr,
+                   fma->super.desc.remote_mem_hndl.qword1,
+                   fma->super.desc.remote_mem_hndl.qword2);
+    return uct_ugni_post_fma(iface, ep, &fma->super, UCS_OK);
 }
 
 ucs_status_t uct_ugni_ep_atomic_fadd32(uct_ep_h tl_ep, uint32_t add,
                                        uint64_t remote_addr, uct_rkey_t rkey,
                                        uint32_t *result, uct_completion_t *comp)
 {
-    return UCS_ERR_UNSUPPORTED;
+    uct_ugni_ep_t *ep = ucs_derived_of(tl_ep, uct_ugni_ep_t);
+    uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
+    uct_ugni_rdma_fetch_desc_t *fma;
+
+    UCT_TL_IFACE_GET_TX_DESC(&iface->super.super, &iface->free_desc_famo, fma,
+                             return UCS_ERR_NO_RESOURCE);
+    uct_ugni_format_fma_amo(fma, GNI_POST_AMO, GNI_FMA_ATOMIC2_FIADD_S,
+                            (uint64_t)add, 0, fma + 1, remote_addr,
+                            rkey, LEN_32, ep, comp, uct_ugni_amo_unpack32, (void *)result);
+    ucs_trace_data("Posting AMO FADD, GNI_PostFma of size %"PRIx64" value"
+                   "%"PRIx32" to %p, with [%"PRIx64" %"PRIx64"]",
+                   fma->super.desc.length, add,
+                   (void *)fma->super.desc.remote_addr,
+                   fma->super.desc.remote_mem_hndl.qword1,
+                   fma->super.desc.remote_mem_hndl.qword2);
+    return uct_ugni_post_fma(iface, ep, &fma->super, UCS_INPROGRESS);
 }
 
 ucs_status_t uct_ugni_ep_atomic_swap32(uct_ep_h tl_ep, uint32_t swap,
                                        uint64_t remote_addr, uct_rkey_t rkey,
                                        uint32_t *result, uct_completion_t *comp)
 {
-    return UCS_ERR_UNSUPPORTED;
+    uct_ugni_ep_t *ep = ucs_derived_of(tl_ep, uct_ugni_ep_t);
+    uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
+    uct_ugni_rdma_fetch_desc_t *fma;
+
+    UCT_TL_IFACE_GET_TX_DESC(&iface->super.super, &iface->free_desc_famo, fma,
+                             return UCS_ERR_NO_RESOURCE);
+    uct_ugni_format_fma_amo(fma, GNI_POST_AMO, GNI_FMA_ATOMIC2_FSWAP_S,
+                            (uint64_t)swap, 0, fma + 1, remote_addr,
+                            rkey, LEN_32, ep, comp, uct_ugni_amo_unpack64, (void *)result);
+    ucs_trace_data("Posting AMO SWAP, GNI_PostFma of size %"PRIx64" value"
+                   "%"PRIx32" to %p, with [%"PRIx64" %"PRIx64"]",
+                   fma->super.desc.length, swap,
+                   (void *)fma->super.desc.remote_addr,
+                   fma->super.desc.remote_mem_hndl.qword1,
+                   fma->super.desc.remote_mem_hndl.qword2);
+    return uct_ugni_post_fma(iface, ep, &fma->super, UCS_INPROGRESS);
 }
 
 ucs_status_t uct_ugni_ep_atomic_cswap32(uct_ep_h tl_ep, uint32_t compare, uint32_t swap,
                                         uint64_t remote_addr, uct_rkey_t rkey,
                                         uint32_t *result, uct_completion_t *comp)
 {
-    return UCS_ERR_UNSUPPORTED;
-}
+    uct_ugni_ep_t *ep = ucs_derived_of(tl_ep, uct_ugni_ep_t);
+    uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
+    uct_ugni_rdma_fetch_desc_t *fma;
 
-ucs_status_t uct_ugni_ep_am_short(uct_ep_h ep, uint8_t id, uint64_t header,
-                                  const void *payload, unsigned length)
-{
-    return UCS_ERR_UNSUPPORTED;
+    UCT_TL_IFACE_GET_TX_DESC(&iface->super.super, &iface->free_desc_famo, fma,
+                             return UCS_ERR_NO_RESOURCE);
+    uct_ugni_format_fma_amo(fma, GNI_POST_AMO, GNI_FMA_ATOMIC2_CSWAP_S,
+                            (uint64_t)compare, (uint64_t)swap, fma + 1, remote_addr,
+                            rkey, LEN_32, ep, comp, uct_ugni_amo_unpack32, (void *)result);
+    ucs_trace_data("Posting AMO CSWAP, GNI_PostFma of size %"PRIx64" value"
+                   "%"PRIx32" compare %"PRIx32" to %p, with [%"PRIx64" %"PRIx64"]",
+                   fma->super.desc.length, swap, compare,
+                   (void *)fma->super.desc.remote_addr,
+                   fma->super.desc.remote_mem_hndl.qword1,
+                   fma->super.desc.remote_mem_hndl.qword2);
+    return uct_ugni_post_fma(iface, ep, &fma->super, UCS_INPROGRESS);
 }
 
 /* Align to the next 4 bytes */
@@ -504,7 +506,7 @@ ucs_status_t uct_ugni_ep_get_bcopy(uct_ep_h tl_ep,
     uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
     uct_ugni_rdma_fetch_desc_t *fma;
 
-    UCT_UGNI_ZERO_LENGTH_POST(length);
+    UCT_SKIP_ZERO_LENGTH(length);
     UCT_CHECK_LENGTH(ucs_align_up_pow2(length, UGNI_GET_ALIGN),
                      iface->config.fma_seg_size, "get_bcopy");
     UCT_TL_IFACE_GET_TX_DESC(&iface->super.super, &iface->free_desc_get_buffer,
@@ -686,14 +688,15 @@ ucs_status_t uct_ugni_ep_get_zcopy(uct_ep_h tl_ep, void *buffer, size_t length,
     uct_ugni_rdma_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_ugni_rdma_iface_t);
     uct_ugni_base_desc_t *rdma;
 
-    UCT_UGNI_ZERO_LENGTH_POST(length);
+    UCT_SKIP_ZERO_LENGTH(length);
     UCT_CHECK_LENGTH(ucs_align_up_pow2(length, UGNI_GET_ALIGN),
                      iface->config.rdma_max_size, "get_zcopy");
 
     /* Special flow for an unalign data */
-    if (ucs_unlikely(ucs_check_if_align_pow2(remote_addr, UGNI_GET_ALIGN)       ||
-                     ucs_check_if_align_pow2((uintptr_t)buffer, UGNI_GET_ALIGN) ||
-                     ucs_check_if_align_pow2(length, UGNI_GET_ALIGN))) {
+    if (ucs_unlikely((GNI_DEVICE_GEMINI == iface->super.dev->type && 
+                      ucs_check_if_align_pow2((uintptr_t)buffer, UGNI_GET_ALIGN)) ||
+                      ucs_check_if_align_pow2(remote_addr, UGNI_GET_ALIGN)        ||
+                      ucs_check_if_align_pow2(length, UGNI_GET_ALIGN))) {
         return uct_ugni_ep_get_composed(tl_ep, buffer, length, memh,
                                         remote_addr, rkey, comp);
     }
@@ -714,4 +717,10 @@ ucs_status_t uct_ugni_ep_get_zcopy(uct_ep_h tl_ep, void *buffer, size_t length,
                    rdma->desc.remote_mem_hndl.qword1,
                    rdma->desc.remote_mem_hndl.qword2);
     return uct_ugni_post_rdma(iface, ep, rdma);
+}
+
+ucs_status_t uct_ugni_ep_am_short(uct_ep_h ep, uint8_t id, uint64_t header,
+                                  const void *payload, unsigned length)
+{
+    return UCS_ERR_UNSUPPORTED;
 }

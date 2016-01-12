@@ -249,6 +249,7 @@
 # LICENSE
 #
 #   Copyright (c) 2009 Oren Ben-Kiki <oren@ben-kiki.org>
+#   Copyright (C) UT-Battelle, LLC. 2014-2015. ALL RIGHTS RESERVED.
 #
 #   Copying and distribution of this file, with or without modification, are
 #   permitted in any medium without royalty provided the copyright notice
@@ -262,6 +263,8 @@
 ## ----------##
 
 DX_ENV=""
+DX_MIN_VERSION="1.8.6"
+
 AC_DEFUN([DX_FEATURE_doc],  ON)
 AC_DEFUN([DX_FEATURE_dot],  OFF)
 AC_DEFUN([DX_FEATURE_man],  OFF)
@@ -302,6 +305,22 @@ if test "$DX_FLAG_[]DX_CURRENT_FEATURE$$1" = 1; then
     AC_MSG_WARN([$2 not found - will not DX_CURRENT_DESCRIPTION])
     AC_SUBST(DX_FLAG_[]DX_CURRENT_FEATURE, 0)
 fi
+])
+
+# DX_REQUIRE_PROG_WITH_VERSION(VARIABLE, PROGRAM, VERSIONCMD, MINVERSION)
+# ----------------------------------
+# Require the specified program to be found for the DX_CURRENT_FEATURE to work.
+AC_DEFUN([DX_REQUIRE_PROG_WITH_VERSION], [
+AC_PATH_TOOL([$1], [$2])
+if test "$DX_FLAG_[]DX_CURRENT_FEATURE$$1" = 1; then
+    AC_MSG_WARN([$2 not found - will not DX_CURRENT_DESCRIPTION])
+    AC_SUBST(DX_FLAG_[]DX_CURRENT_FEATURE, 0)
+fi
+version=`$3`
+AS_VERSION_COMPARE($version, $4,
+                   [AC_MSG_WARN([$2 version $version is bad. Required version: $4 and above])
+                    AC_SUBST(DX_FLAG_[]DX_CURRENT_FEATURE, 0)
+                    ],[],[])
 ])
 
 # DX_TEST_FEATURE(FEATURE)
@@ -414,7 +433,8 @@ DX_ENV_APPEND(VERSION, $PACKAGE_VERSION)
 DX_ARG_ABLE(doc, [generate any doxygen documentation],
             [],
             [],
-            [DX_REQUIRE_PROG([DX_DOXYGEN], doxygen)
+            [DX_REQUIRE_PROG_WITH_VERSION([DX_DOXYGEN], doxygen,[doxygen --version],
+                                          $DX_MIN_VERSION)
              DX_REQUIRE_PROG([DX_PERL], perl)],
             [DX_ENV_APPEND(PERL_PATH, $DX_PERL)])
 
@@ -483,6 +503,7 @@ DX_ARG_ABLE(ps, [generate doxygen PostScript documentation],
             [DX_CLEAR_DEPEND(doc, 1)],
             [DX_REQUIRE_PROG([DX_LATEX], latex)
              DX_REQUIRE_PROG([DX_MAKEINDEX], makeindex)
+             DX_REQUIRE_PROG([DX_BIBTEX], bibtex)
              DX_REQUIRE_PROG([DX_DVIPS], dvips)
              DX_REQUIRE_PROG([DX_EGREP], egrep)])
 
@@ -492,6 +513,7 @@ DX_ARG_ABLE(pdf, [generate doxygen PDF documentation],
             [DX_CLEAR_DEPEND(doc, 1)],
             [DX_REQUIRE_PROG([DX_PDFLATEX], pdflatex)
              DX_REQUIRE_PROG([DX_MAKEINDEX], makeindex)
+             DX_REQUIRE_PROG([DX_BIBTEX], bibtex)
              DX_REQUIRE_PROG([DX_EGREP], egrep)])
 
 # LaTeX generation for PS and/or PDF:
